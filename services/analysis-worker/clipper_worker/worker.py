@@ -25,6 +25,7 @@ from .core import (
 
 
 LOG = logging.getLogger("peertube-clipper-analysis-worker")
+LEASE_HEADER = "X-Peertube-Clipper-Worker-Lease"
 
 
 class RunInactive(RuntimeError):
@@ -42,12 +43,25 @@ class BridgeClient:
     def close(self) -> None:
         self.client.close()
 
+    @staticmethod
+    def _lease_headers(run: dict[str, Any]) -> dict[str, str]:
+        lease = str(run.get("_worker_lease") or "")
+        if not lease:
+            raise RunInactive("analysis run has no worker lease")
+        return {LEASE_HEADER: lease}
+
     def claim_next(self) -> dict[str, Any] | None:
         response = self.client.post(f"{self.base_url}/v1/analysis-runs/claim-next")
         if response.status_code == 204:
             return None
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
+        run = payload.get("analysis_run")
+        lease = payload.get("worker_lease")
+        if not isinstance(run, dict) or not isinstance(lease, str) or not lease:
+            raise RuntimeError("Bridge returned an invalid worker claim")
+        run["_worker_lease"] = lease
+        return run
 
     def get_caption(self, run: dict[str, Any]) -> bytes:
         response = self.client.get(
@@ -56,25 +70,21 @@ class BridgeClient:
         response.raise_for_status()
         return response.content
 
-    def get_run_state(self, run: dict[str, Any]) -> dict[str, Any] | None:
-        response = self.client.get(f"{self.base_url}/v1/videos/{run['video_uuid']}")
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        payload = response.json()
-        for candidate in payload.get("analysis_runs") or []:
-            if candidate.get("analysis_run_id") == run.get("analysis_run_id"):
-                return candidate
-        return None
-
     def assert_analyzing(self, run: dict[str, Any]) -> None:
-        current = self.get_run_state(run)
-        if not current or current.get("status") != "analyzing":
-            raise RunInactive("analysis run is no longer active")
+        response = self.client.post(
+            f"{self.base_url}/v1/videos/{run['video_uuid']}/analysis-runs/{run['analysis_run_id']}/heartbeat",
+            headers=self._lease_headers(run),
+        )
+        if response.status_code == 409:
+            raise RunInactive("analysis worker lease is no longer active")
+        response.raise_for_status()
+        if response.json().get("status") != "analyzing":
+            raise RunInactive("analysis run is no longer analyzing")
 
     def create_candidate(self, run: dict[str, Any], candidate: ProposedCandidate) -> None:
         response = self.client.post(
             f"{self.base_url}/v1/videos/{run['video_uuid']}/analysis-runs/{run['analysis_run_id']}/candidates",
+            headers=self._lease_headers(run),
             json={
                 "anchor_start": candidate.anchor_start,
                 "anchor_end": candidate.anchor_end,
@@ -89,7 +99,8 @@ class BridgeClient:
 
     def finish(self, run: dict[str, Any], status: str, error: str | None = None) -> None:
         response = self.client.patch(
-            f"{self.base_url}/v1/videos/{run['video_uuid']}/analysis-runs/{run['analysis_run_id']}",
+            f"{self.base_url}/v1/videos/{run['video_uuid']}/analysis-runs/{run['analysis_run_id']}/worker-state",
+            headers=self._lease_headers(run),
             json={"status": status, "error": error},
         )
         if response.status_code == 409:
@@ -122,7 +133,6 @@ class OllamaLocator:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
-                "think": False,
                 "options": {
                     "num_ctx": self.num_ctx,
                     "num_thread": self.num_threads,
@@ -145,6 +155,7 @@ def analyze_run(
     chunk_seconds: float = 300.0,
     overlap_seconds: float = 40.0,
 ) -> int:
+    bridge.assert_analyzing(run)
     caption = bridge.get_caption(run)
     checksum = hashlib.sha256(caption).hexdigest()
     if checksum != run.get("caption_checksum"):
@@ -178,6 +189,7 @@ def analyze_run(
     bridge.assert_analyzing(run)
 
     for candidate in candidates:
+        bridge.assert_analyzing(run)
         bridge.create_candidate(run, candidate)
 
     bridge.assert_analyzing(run)
