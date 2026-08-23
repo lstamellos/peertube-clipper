@@ -3,12 +3,107 @@
   max-width: 1100px;
 }
 
-.peertube-clipper-entry {
+.peertube-clipper-entry,
+.peertube-clipper-candidate,
+.peertube-clipper-empty {
   padding: 1rem;
   border: 1px solid var(--input-border-color, #ccc);
   border-radius: 0.5rem;
 }
 
+.peertube-clipper-entry p:last-child {
+  margin-bottom: 0;
+}
+
+.peertube-clipper-open-review {
+  display: inline-block;
+  margin: 0.25rem 0 0.75rem;
+}
+
 .peertube-clipper-muted {
   opacity: 0.72;
+}
+
+.peertube-clipper-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0 1.25rem;
+}
+
+.peertube-clipper-summary > div {
+  padding: 0.75rem;
+  border: 1px solid var(--input-border-color, #ccc);
+  border-radius: 0.5rem;
+}
+
+.peertube-clipper-summary span,
+.peertube-clipper-kicker {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-size: 0.8rem;
+  opacity: 0.68;
+}
+
+.peertube-clipper-candidates {
+  display: grid;
+  gap: 1rem;
+}
+
+.peertube-clipper-candidate header,
+.peertube-clipper-candidate footer,
+.peertube-clipper-boundaries {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.peertube-clipper-candidate header {
+  justify-content: space-between;
+}
+
+.peertube-clipper-status {
+  padding: 0.2rem 0.55rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.peertube-clipper-transcript {
+  margin: 1rem 0;
+  padding: 0.8rem;
+  background: var(--submenu-background-color, rgba(127, 127, 127, 0.08));
+  border-radius: 0.35rem;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.peertube-clipper-boundaries {
+  margin-bottom: 1rem;
+}
+
+.peertube-clipper-boundaries label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.peertube-clipper-boundaries input {
+  width: 9rem;
+}
+
+.peertube-clipper-candidate.is-busy {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+@media (max-width: 700px) {
+  .peertube-clipper-boundaries input {
+    width: 100%;
+  }
+
+  .peertube-clipper-boundaries label {
+    flex: 1 1 100%;
+  }
 }
