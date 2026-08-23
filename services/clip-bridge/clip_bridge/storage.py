@@ -81,6 +81,14 @@ class Storage:
             ).fetchone()
             return dict(row) if row else None
 
+    def delete_video(self, video_uuid: UUID) -> bool:
+        with self.connect() as db:
+            cursor = db.execute(
+                "DELETE FROM videos WHERE video_uuid = ?",
+                (str(video_uuid),),
+            )
+            return cursor.rowcount > 0
+
     def list_candidates(self, video_uuid: UUID) -> list[dict]:
         with self.connect() as db:
             rows = db.execute(
