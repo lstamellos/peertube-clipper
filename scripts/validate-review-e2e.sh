@@ -28,6 +28,7 @@ UNRELATED_ID=""
 BRIDGE_TOKEN=""
 WORKFLOW_CREATED=0
 CLEANUP_OK=1
+REVOKE_API_OK=1
 LAST_CANDIDATE=""
 LAST_SESSION_TOKEN=""
 LAST_SESSION_USER_ID=""
@@ -64,6 +65,9 @@ Optional:
 This script intentionally writes temporary test state and temporary OAuth
 sessions, but cleans both before exit. It does not modify the PeerTube video,
 caption, channel, collaborator relation, password or existing sessions.
+For users bound to an external-auth plugin, the temporary PeerTube session
+inherits only the registered auth context name from a previous session; no
+existing access or refresh token is read or reused.
 USAGE
 }
 
@@ -151,14 +155,32 @@ revoke_token() {
     return 0
   fi
   say "${label}_temporary_session_revoked=FAIL"
-  CLEANUP_OK=0
+  REVOKE_API_OK=0
   return 1
+}
+
+purge_temporary_sessions() {
+  [ -n "$DB_NAME" ] || return 1
+  psql_postgres -d "$DB_NAME" -Atq \
+    -v owner="$OWNER_USER" \
+    -v editor="$EDITOR_USER" \
+    -v unrelated="$UNRELATED_USER" <<'SQL' >/dev/null 2>&1
+DELETE FROM "oAuthToken" token
+USING "user" actor
+WHERE token."userId" = actor.id
+  AND token."loginDevice" = 'PeerTube Clipper E2E'
+  AND actor.username IN (:'owner', :'editor', :'unrelated');
+SQL
 }
 
 cleanup() {
   revoke_token "$OWNER_TOKEN" owner >/dev/null 2>&1 || true
   revoke_token "$EDITOR_TOKEN" editor >/dev/null 2>&1 || true
   revoke_token "$UNRELATED_TOKEN" unrelated >/dev/null 2>&1 || true
+
+  if [ -n "$DB_NAME" ]; then
+    purge_temporary_sessions || CLEANUP_OK=0
+  fi
 
   if [ "$WORKFLOW_CREATED" -eq 1 ] && [ -n "$BRIDGE_TOKEN" ]; then
     local result code file
@@ -216,12 +238,23 @@ create_session() {
   refresh="$(openssl rand -hex 32)" || return 1
   inserted="$(psql_postgres -d "$DB_NAME" -Atq -v username="$username" -v access="$access" -v refresh="$refresh" <<'SQL'
 WITH selected_user AS (
-  SELECT id FROM "user" WHERE username = :'username' LIMIT 1
+  SELECT id, "pluginAuth"
+  FROM "user"
+  WHERE username = :'username'
+  LIMIT 1
+), selected_auth AS (
+  SELECT token."authName"
+  FROM "oAuthToken" token
+  INNER JOIN selected_user actor ON actor.id = token."userId"
+  WHERE token."authName" IS NOT NULL
+  ORDER BY token."updatedAt" DESC NULLS LAST, token.id DESC
+  LIMIT 1
 ), selected_client AS (
   SELECT id FROM "oAuthClient" ORDER BY id LIMIT 1
 )
 INSERT INTO "oAuthToken"(
   "accessToken", "accessTokenExpiresAt", "refreshToken", "refreshTokenExpiresAt",
+  "authName",
   "loginDevice", "loginIP", "loginDate",
   "lastActivityDevice", "lastActivityIP", "lastActivityDate",
   "createdAt", "updatedAt", "userId", "oAuthClientId"
@@ -229,10 +262,14 @@ INSERT INTO "oAuthToken"(
 SELECT
   :'access', now() + interval '3 minutes',
   :'refresh', now() + interval '5 minutes',
+  CASE WHEN actor."pluginAuth" IS NULL THEN NULL ELSE auth."authName" END,
   'PeerTube Clipper E2E', '127.0.0.1', now(),
   'PeerTube Clipper E2E', '127.0.0.1', now(),
-  now(), now(), selected_user.id, selected_client.id
-FROM selected_user CROSS JOIN selected_client
+  now(), now(), actor.id, client.id
+FROM selected_user actor
+CROSS JOIN selected_client client
+LEFT JOIN selected_auth auth ON TRUE
+WHERE actor."pluginAuth" IS NULL OR auth."authName" IS NOT NULL
 RETURNING "userId";
 SQL
 )"
@@ -242,19 +279,19 @@ SQL
   return 0
 }
 
-create_session "$OWNER_USER" || die "owner_test_session_failed"
+create_session "$OWNER_USER" || die "owner_test_session_failed_or_auth_context_missing"
 OWNER_TOKEN="$LAST_SESSION_TOKEN"
 OWNER_ID="$LAST_SESSION_USER_ID"
 LAST_SESSION_TOKEN=""
 LAST_SESSION_USER_ID=""
 
-create_session "$EDITOR_USER" || die "editor_test_session_failed"
+create_session "$EDITOR_USER" || die "editor_test_session_failed_or_auth_context_missing"
 EDITOR_TOKEN="$LAST_SESSION_TOKEN"
 EDITOR_ID="$LAST_SESSION_USER_ID"
 LAST_SESSION_TOKEN=""
 LAST_SESSION_USER_ID=""
 
-create_session "$UNRELATED_USER" || die "unrelated_test_session_failed"
+create_session "$UNRELATED_USER" || die "unrelated_test_session_failed_or_auth_context_missing"
 UNRELATED_TOKEN="$LAST_SESSION_TOKEN"
 UNRELATED_ID="$LAST_SESSION_USER_ID"
 LAST_SESSION_TOKEN=""
@@ -353,6 +390,18 @@ if revoke_token "$OWNER_TOKEN" owner; then OWNER_TOKEN=""; fi
 if revoke_token "$EDITOR_TOKEN" editor; then EDITOR_TOKEN=""; fi
 if revoke_token "$UNRELATED_TOKEN" unrelated; then UNRELATED_TOKEN=""; fi
 
+if [ -n "$OWNER_TOKEN$EDITOR_TOKEN$UNRELATED_TOKEN" ]; then
+  if purge_temporary_sessions; then
+    OWNER_TOKEN=""
+    EDITOR_TOKEN=""
+    UNRELATED_TOKEN=""
+    say "temporary_session_db_fallback_cleanup=PASS"
+  else
+    CLEANUP_OK=0
+    say "temporary_session_db_fallback_cleanup=FAIL"
+  fi
+fi
+
 cleanup_result="$(bridge_json DELETE "/v1/videos/$VIDEO_UUID")"
 cleanup_code="${cleanup_result%%$'\t'*}"; cleanup_file="${cleanup_result#*$'\t'}"
 rm -f "$cleanup_file" 2>/dev/null || true
@@ -368,7 +417,10 @@ say "workflow_cleanup_verified=PASS"
 
 trap - EXIT HUP INT TERM
 
-if [ "$CLEANUP_OK" -eq 1 ] && [ -z "$OWNER_TOKEN$EDITOR_TOKEN$UNRELATED_TOKEN" ]; then
+if [ "$CLEANUP_OK" -eq 1 ] \
+  && [ "$REVOKE_API_OK" -eq 1 ] \
+  && [ -z "$OWNER_TOKEN$EDITOR_TOKEN$UNRELATED_TOKEN" ]
+then
   say "temporary_sessions_cleanup=PASS"
   say "E2E_RESULT=PASS"
   exit 0
