@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 VIDEO = UUID("22222222-2222-4222-8222-222222222222")
 TOKEN = "test-service-token"
 CAPTION = b"WEBVTT\n\n00:10.000 --> 00:15.000\nCanonical API caption\n"
+LEASE_HEADER = "X-Peertube-Clipper-Worker-Lease"
 
 
 def test_snapshot_claim_candidate_and_complete_api(tmp_path, monkeypatch):
@@ -45,8 +46,19 @@ def test_snapshot_claim_candidate_and_complete_api(tmp_path, monkeypatch):
 
     worker_claim = client.post("/v1/analysis-runs/claim-next", headers=headers)
     assert worker_claim.status_code == 200
-    assert worker_claim.json()["analysis_run_id"] == run["analysis_run_id"]
-    assert worker_claim.json()["status"] == "analyzing"
+    worker_payload = worker_claim.json()
+    assert worker_payload["analysis_run"]["analysis_run_id"] == run["analysis_run_id"]
+    assert worker_payload["analysis_run"]["status"] == "analyzing"
+    lease = worker_payload["worker_lease"]
+    assert isinstance(lease, str) and lease
+    worker_headers = {**headers, LEASE_HEADER: lease}
+
+    heartbeat = client.post(
+        f"/v1/videos/{VIDEO}/analysis-runs/{run['analysis_run_id']}/heartbeat",
+        headers=worker_headers,
+    )
+    assert heartbeat.status_code == 200
+    assert heartbeat.json()["status"] == "analyzing"
 
     fetched = client.get(
         f"/v1/videos/{VIDEO}/analysis-runs/{run['analysis_run_id']}/caption",
@@ -55,9 +67,22 @@ def test_snapshot_claim_candidate_and_complete_api(tmp_path, monkeypatch):
     assert fetched.status_code == 200
     assert fetched.content == CAPTION
 
-    created = client.post(
+    without_lease = client.post(
         f"/v1/videos/{VIDEO}/analysis-runs/{run['analysis_run_id']}/candidates",
         headers=headers,
+        json={
+            "anchor_start": 10,
+            "anchor_end": 14,
+            "suggested_start": 10,
+            "suggested_end": 15,
+            "canonical_transcript": "Canonical API caption",
+        },
+    )
+    assert without_lease.status_code == 409
+
+    created = client.post(
+        f"/v1/videos/{VIDEO}/analysis-runs/{run['analysis_run_id']}/candidates",
+        headers=worker_headers,
         json={
             "anchor_start": 10,
             "anchor_end": 14,
@@ -73,8 +98,8 @@ def test_snapshot_claim_candidate_and_complete_api(tmp_path, monkeypatch):
     assert state_while_analyzing.json()["candidates"] == []
 
     completed = client.patch(
-        f"/v1/videos/{VIDEO}/analysis-runs/{run['analysis_run_id']}",
-        headers=headers,
+        f"/v1/videos/{VIDEO}/analysis-runs/{run['analysis_run_id']}/worker-state",
+        headers=worker_headers,
         json={"status": "complete", "error": None},
     )
     assert completed.status_code == 200
