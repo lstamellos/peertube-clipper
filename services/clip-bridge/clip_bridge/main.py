@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 
-from .models import CandidateCreate, CandidateReview
+from .models import AnalysisRunClaim, AnalysisRunUpdate, CandidateCreate, CandidateReview
 from .storage import Storage
 
 
@@ -59,6 +59,7 @@ def get_video(video_uuid: UUID) -> dict:
     return {
         "video": state,
         "candidates": storage.list_candidates(video_uuid),
+        "analysis_runs": storage.list_analysis_runs(video_uuid),
     }
 
 
@@ -107,3 +108,35 @@ def review_candidate(
         raise HTTPException(status_code=404, detail="candidate not found")
 
     return result
+
+
+@app.get(
+    "/v1/videos/{video_uuid}/analysis-runs",
+    dependencies=[Depends(require_service_token)],
+)
+def list_analysis_runs(video_uuid: UUID) -> list[dict]:
+    return storage.list_analysis_runs(video_uuid)
+
+
+@app.post(
+    "/v1/videos/{video_uuid}/analysis-runs/claim",
+    dependencies=[Depends(require_service_token)],
+)
+def claim_analysis_run(video_uuid: UUID, claim: AnalysisRunClaim) -> dict:
+    run, created = storage.claim_analysis_run(video_uuid, claim)
+    return {"created": created, "analysis_run": run}
+
+
+@app.patch(
+    "/v1/videos/{video_uuid}/analysis-runs/{analysis_run_id}",
+    dependencies=[Depends(require_service_token)],
+)
+def update_analysis_run(
+    video_uuid: UUID,
+    analysis_run_id: str,
+    update: AnalysisRunUpdate,
+) -> dict:
+    run = storage.update_analysis_run(video_uuid, analysis_run_id, update)
+    if not run:
+        raise HTTPException(status_code=404, detail="analysis run not found")
+    return run
