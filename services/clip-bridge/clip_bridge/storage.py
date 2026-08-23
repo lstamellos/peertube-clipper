@@ -122,6 +122,10 @@ class Storage:
                     now,
                 ),
             )
+            db.execute(
+                "UPDATE videos SET status = 'pending_review', updated_at = ? WHERE video_uuid = ?",
+                (now, str(video_uuid)),
+            )
             row = db.execute(
                 "SELECT * FROM candidates WHERE candidate_id = ?",
                 (candidate_id,),
@@ -161,6 +165,19 @@ class Storage:
                     candidate_id,
                     str(video_uuid),
                 ),
+            )
+            pending = db.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM candidates
+                WHERE video_uuid = ? AND status IN ('suggested', 'edited')
+                """,
+                (str(video_uuid),),
+            ).fetchone()["count"]
+            video_status = "pending_review" if pending else "reviewed"
+            db.execute(
+                "UPDATE videos SET status = ?, updated_at = ? WHERE video_uuid = ?",
+                (video_status, now, str(video_uuid)),
             )
             row = db.execute(
                 "SELECT * FROM candidates WHERE candidate_id = ?",
