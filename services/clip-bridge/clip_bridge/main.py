@@ -35,7 +35,6 @@ def require_service_token(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="service token is not configured",
         )
-
     if not x_peertube_clipper_token or not hmac.compare_digest(
         x_peertube_clipper_token,
         SERVICE_TOKEN,
@@ -61,10 +60,7 @@ def ensure_video(video_uuid: UUID) -> dict:
     return storage.ensure_video(video_uuid)
 
 
-@app.patch(
-    "/v1/videos/{video_uuid}/status",
-    dependencies=[Depends(require_service_token)],
-)
+@app.patch("/v1/videos/{video_uuid}/status", dependencies=[Depends(require_service_token)])
 def update_video_status(video_uuid: UUID, update: VideoStatusUpdate) -> dict:
     return storage.set_video_status(video_uuid, update.status)
 
@@ -74,7 +70,6 @@ def get_video(video_uuid: UUID) -> dict:
     state = storage.get_video(video_uuid)
     if not state:
         raise HTTPException(status_code=404, detail="video workflow not found")
-
     return {
         "video": state,
         "candidates": storage.list_candidates(video_uuid),
@@ -86,22 +81,15 @@ def get_video(video_uuid: UUID) -> dict:
 def delete_video(video_uuid: UUID) -> dict:
     if not storage.delete_video(video_uuid):
         raise HTTPException(status_code=404, detail="video workflow not found")
-
     return {"deleted": True, "video_uuid": str(video_uuid)}
 
 
-@app.get(
-    "/v1/videos/{video_uuid}/candidates",
-    dependencies=[Depends(require_service_token)],
-)
+@app.get("/v1/videos/{video_uuid}/candidates", dependencies=[Depends(require_service_token)])
 def list_candidates(video_uuid: UUID) -> list[dict]:
     return storage.list_candidates(video_uuid)
 
 
-@app.post(
-    "/v1/videos/{video_uuid}/candidates",
-    dependencies=[Depends(require_service_token)],
-)
+@app.post("/v1/videos/{video_uuid}/candidates", dependencies=[Depends(require_service_token)])
 def create_candidate(video_uuid: UUID, candidate: CandidateCreate) -> dict:
     try:
         return storage.create_candidate(video_uuid, candidate)
@@ -113,19 +101,13 @@ def create_candidate(video_uuid: UUID, candidate: CandidateCreate) -> dict:
     "/v1/videos/{video_uuid}/candidates/{candidate_id}",
     dependencies=[Depends(require_service_token)],
 )
-def review_candidate(
-    video_uuid: UUID,
-    candidate_id: str,
-    review: CandidateReview,
-) -> dict:
+def review_candidate(video_uuid: UUID, candidate_id: str, review: CandidateReview) -> dict:
     try:
         result = storage.review_candidate(video_uuid, candidate_id, review)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-
     if not result:
         raise HTTPException(status_code=404, detail="candidate not found")
-
     return result
 
 
@@ -150,17 +132,9 @@ def claim_analysis_run(video_uuid: UUID, claim: AnalysisRunClaim) -> dict:
     "/v1/videos/{video_uuid}/analysis-runs/{analysis_run_id}/caption",
     dependencies=[Depends(require_service_token)],
 )
-async def attach_caption_snapshot(
-    video_uuid: UUID,
-    analysis_run_id: str,
-    request: Request,
-) -> dict:
+async def attach_caption_snapshot(video_uuid: UUID, analysis_run_id: str, request: Request) -> dict:
     try:
-        return storage.attach_caption_snapshot(
-            video_uuid,
-            analysis_run_id,
-            await request.body(),
-        )
+        return storage.attach_caption_snapshot(video_uuid, analysis_run_id, await request.body())
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -176,15 +150,32 @@ def get_caption_snapshot(video_uuid: UUID, analysis_run_id: str) -> Response:
     return Response(content=caption, media_type="text/vtt; charset=utf-8")
 
 
+@app.post("/v1/analysis-runs/claim-next", dependencies=[Depends(require_service_token)])
+def claim_next_analysis_run():
+    claimed = storage.claim_next_analysis_run()
+    if claimed is None:
+        return Response(status_code=204)
+    run, lease_token = claimed
+    return {"analysis_run": run, "worker_lease": lease_token}
+
+
 @app.post(
-    "/v1/analysis-runs/claim-next",
+    "/v1/videos/{video_uuid}/analysis-runs/{analysis_run_id}/heartbeat",
     dependencies=[Depends(require_service_token)],
 )
-def claim_next_analysis_run():
-    run = storage.claim_next_analysis_run()
-    if run is None:
-        return Response(status_code=204)
-    return run
+def heartbeat_analysis_run(
+    video_uuid: UUID,
+    analysis_run_id: str,
+    x_peertube_clipper_worker_lease: str | None = Header(default=None),
+) -> dict:
+    try:
+        return storage.heartbeat_analysis_run(
+            video_uuid,
+            analysis_run_id,
+            x_peertube_clipper_worker_lease or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post(
@@ -195,12 +186,35 @@ def create_analysis_candidate(
     video_uuid: UUID,
     analysis_run_id: str,
     candidate: CandidateCreate,
+    x_peertube_clipper_worker_lease: str | None = Header(default=None),
 ) -> dict:
     try:
         return storage.create_analysis_candidate(
             video_uuid,
             analysis_run_id,
+            x_peertube_clipper_worker_lease or "",
             candidate,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.patch(
+    "/v1/videos/{video_uuid}/analysis-runs/{analysis_run_id}/worker-state",
+    dependencies=[Depends(require_service_token)],
+)
+def finish_analysis_run(
+    video_uuid: UUID,
+    analysis_run_id: str,
+    update: AnalysisRunUpdate,
+    x_peertube_clipper_worker_lease: str | None = Header(default=None),
+) -> dict:
+    try:
+        return storage.finish_analysis_run(
+            video_uuid,
+            analysis_run_id,
+            x_peertube_clipper_worker_lease or "",
+            update,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -210,11 +224,7 @@ def create_analysis_candidate(
     "/v1/videos/{video_uuid}/analysis-runs/{analysis_run_id}",
     dependencies=[Depends(require_service_token)],
 )
-def update_analysis_run(
-    video_uuid: UUID,
-    analysis_run_id: str,
-    update: AnalysisRunUpdate,
-) -> dict:
+def update_analysis_run(video_uuid: UUID, analysis_run_id: str, update: AnalysisRunUpdate) -> dict:
     try:
         run = storage.update_analysis_run(video_uuid, analysis_run_id, update)
     except ValueError as exc:
