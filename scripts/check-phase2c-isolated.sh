@@ -28,6 +28,12 @@ if [ "$STATUS" -eq 0 ]; then
 fi
 
 if [ "$STATUS" -eq 0 ]; then
+  "$VENV/bin/python" -m compileall -q \
+    "$ROOT/services/clip-bridge/clip_bridge" \
+    "$ROOT/services/analysis-worker/clipper_worker" || STATUS=1
+fi
+
+if [ "$STATUS" -eq 0 ]; then
   (
     cd "$ROOT/services/clip-bridge" || exit 1
     "$VENV/bin/python" -m pytest -q
