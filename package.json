@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "check": "npm run check:plugin && npm run check:shell",
-    "check:plugin": "node --check packages/peertube-plugin-clipper/main.js && node --check packages/peertube-plugin-clipper/permission.js && node --check packages/peertube-plugin-clipper/client-scripts/common.js && node --check packages/peertube-plugin-clipper/client-scripts/video-edit.js && node --test packages/peertube-plugin-clipper/test/*.test.js",
+    "check:plugin": "node --check packages/peertube-plugin-clipper/main.js && node --check packages/peertube-plugin-clipper/permission.js && node --check packages/peertube-plugin-clipper/readiness.js && node --check packages/peertube-plugin-clipper/client-scripts/common.js && node --check packages/peertube-plugin-clipper/client-scripts/video-edit.js && node --test packages/peertube-plugin-clipper/test/*.test.js",
     "check:shell": "for f in scripts/*.sh; do bash -n \"$f\" || exit 1; done"
   }
 }
