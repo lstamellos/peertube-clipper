@@ -129,17 +129,22 @@ function candidateCard (videoUuid, candidate, index) {
   const editorStart = candidate.editor_start == null ? suggestedStart : Number(candidate.editor_start)
   const editorEnd = candidate.editor_end == null ? suggestedEnd : Number(candidate.editor_end)
   const sourceUrl = `/w/${encodeURIComponent(videoUuid)}?start=${Math.max(0, Math.floor(editorStart))}`
+  const category = candidate.category ? ` · ${escapeHtml(candidate.category)}` : ''
+  const reason = candidate.analysis_reason
+    ? `<p class="peertube-clipper-muted"><strong>Why:</strong> ${escapeHtml(candidate.analysis_reason)}</p>`
+    : ''
 
   return `
     <article class="peertube-clipper-candidate" data-candidate-id="${escapeHtml(candidate.candidate_id)}">
       <header>
         <div>
-          <span class="peertube-clipper-kicker">Candidate ${index + 1}</span>
+          <span class="peertube-clipper-kicker">Candidate ${index + 1}${category}</span>
           <strong>${formatSeconds(suggestedStart)} – ${formatSeconds(suggestedEnd)}</strong>
         </div>
         <span class="peertube-clipper-status">${escapeHtml(candidate.status || 'suggested')}</span>
       </header>
 
+      ${reason}
       <div class="peertube-clipper-transcript">${escapeHtml(candidate.canonical_transcript || '')}</div>
 
       <div class="peertube-clipper-boundaries">
