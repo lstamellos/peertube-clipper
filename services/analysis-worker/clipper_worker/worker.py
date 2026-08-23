@@ -91,6 +91,8 @@ class BridgeClient:
                 "suggested_start": candidate.suggested_start,
                 "suggested_end": candidate.suggested_end,
                 "canonical_transcript": candidate.canonical_transcript,
+                "category": candidate.category,
+                "analysis_reason": candidate.reason,
             },
         )
         if response.status_code == 409:
