@@ -62,6 +62,14 @@ def get_video(video_uuid: UUID) -> dict:
     }
 
 
+@app.delete("/v1/videos/{video_uuid}", dependencies=[Depends(require_service_token)])
+def delete_video(video_uuid: UUID) -> dict:
+    if not storage.delete_video(video_uuid):
+        raise HTTPException(status_code=404, detail="video workflow not found")
+
+    return {"deleted": True, "video_uuid": str(video_uuid)}
+
+
 @app.get(
     "/v1/videos/{video_uuid}/candidates",
     dependencies=[Depends(require_service_token)],
