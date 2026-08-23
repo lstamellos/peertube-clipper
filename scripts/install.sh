@@ -28,6 +28,7 @@ TOKEN_FILE=""
 STATE_DIR=""
 WITH_ANALYSIS=0
 MODEL="qwen3:1.7b"
+ROTATE_TOKEN=0
 
 DRY_RUN=0
 NO_RESTART=0
@@ -65,6 +66,7 @@ Companion services:
   --state-dir PATH                   container deployment state directory
   --with-analysis                    provision Ollama in container mode
   --model NAME                       default: qwen3:1.7b
+  --rotate-token                     rotate the Bridge service credential
 
 PeerTube:
   --peertube-deployment auto|native|docker|skip
@@ -95,6 +97,7 @@ while [ "$#" -gt 0 ]; do
     --state-dir) STATE_DIR="$2"; shift 2 ;;
     --with-analysis) WITH_ANALYSIS=1; shift ;;
     --model) MODEL="$2"; shift 2 ;;
+    --rotate-token) ROTATE_TOKEN=1; shift ;;
     --peertube-deployment) PT_MODE="$2"; shift 2 ;;
     --peertube-root) PT_ROOT="$2"; shift 2 ;;
     --peertube-user) PT_USER="$2"; shift 2 ;;
@@ -141,6 +144,36 @@ make_token() {
   fi
 }
 
+resolve_state_dir() {
+  [ -n "$STATE_DIR" ] && return 0
+  if [ "$(id -u)" -eq 0 ]; then
+    STATE_DIR=/var/lib/peertube-clipper
+  else
+    STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/peertube-clipper"
+  fi
+}
+
+read_env_token() {
+  local file="$1"
+  [ -r "$file" ] || return 1
+  sed -n 's/^PEERTUBE_CLIPPER_SERVICE_TOKEN=//p' "$file" | head -n 1
+}
+
+load_existing_token() {
+  case "$MODE" in
+    container)
+      resolve_state_dir
+      read_env_token "$STATE_DIR/bridge.env"
+      ;;
+    native)
+      read_env_token /etc/peertube-clipper/bridge.env
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 private_file() {
   local file="$1" text="$2"
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -174,14 +207,7 @@ wait_bridge() {
 install_bridge_container() {
   need docker
   docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required"
-
-  if [ -z "$STATE_DIR" ]; then
-    if [ "$(id -u)" -eq 0 ]; then
-      STATE_DIR=/var/lib/peertube-clipper
-    else
-      STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/peertube-clipper"
-    fi
-  fi
+  resolve_state_dir
 
   local stack="$STATE_DIR/stack" envfile="$STATE_DIR/bridge.env"
 
@@ -283,8 +309,22 @@ prepare_bridge() {
     return 0
   fi
 
-  TOKEN="$(make_token)"
-  [ -n "$TOKEN" ] || die "Token generation failed"
+  if [ "$ROTATE_TOKEN" -eq 0 ]; then
+    TOKEN="$(load_existing_token 2>/dev/null || true)"
+    if [ -n "$TOKEN" ]; then
+      say "Reusing existing Bridge service credential"
+    fi
+  fi
+
+  if [ -z "$TOKEN" ]; then
+    TOKEN="$(make_token)"
+    [ -n "$TOKEN" ] || die "Token generation failed"
+    if [ "$ROTATE_TOKEN" -eq 1 ]; then
+      say "Rotating Bridge service credential"
+    else
+      say "Generated Bridge service credential"
+    fi
+  fi
 
   if [ "$PT_MODE" = docker ] && [ -z "$BRIDGE_URL" ]; then
     die "Dockerized PeerTube requires explicit --bridge-url reachable from its container"
