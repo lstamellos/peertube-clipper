@@ -37,8 +37,9 @@ test('native plugin installer is intended to be callable through bash even witho
 })
 
 test('main native installer delegates to persistent installer and does not recreate ephemeral staging', () => {
-  assert.match(mainInstaller, /bash \"\$ROOT\/scripts\/install-plugin-native-stable\.sh\"/)
-  assert.match(mainInstaller, /--no-restart/)
-  assert.doesNotMatch(mainInstaller, /mktemp -d \/tmp\/peertube-clipper-stage/)
-  assert.doesNotMatch(mainInstaller, /--plugin-path \"\$stage\"/)
+  const nativeFunction = mainInstaller.match(/install_plugin_native\(\) \{[\s\S]*?\n\}\n\ninstall_plugin_docker\(\)/)?.[0] || ''
+  assert.match(nativeFunction, /bash \"\$ROOT\/scripts\/install-plugin-native-stable\.sh\"/)
+  assert.match(nativeFunction, /--no-restart/)
+  assert.doesNotMatch(nativeFunction, /mktemp -d \/tmp\/peertube-clipper-stage/)
+  assert.doesNotMatch(nativeFunction, /--plugin-path \"\$stage\"/)
 })
