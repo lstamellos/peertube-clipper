@@ -8,14 +8,14 @@ The worker never reads an arbitrary current transcript. A successful readiness e
 
 A queued analysis run is eligible for a worker claim only when that immutable VTT snapshot is present. The worker hashes the snapshot again before analysis.
 
-If a newer canonical caption revision is claimed while an older run is analyzing, the older run becomes `stale`. Bridge writes are state-checked atomically: a stale run cannot add more candidates or transition to `complete`. Candidates attached to non-complete or stale runs are not exposed in the shared review queue.
+If a newer canonical caption revision or analyzer generation is claimed while an older run is analyzing, the older run becomes `stale` and its worker lease is revoked. Bridge writes are state- and lease-checked atomically: a stale or expired worker cannot add more candidates or transition to `complete`. Candidates attached to non-complete or stale runs remain in persistence for audit/history but are not exposed in the shared review queue.
 
 ## Worker lifecycle
 
 ```text
 queued + caption snapshot
         |
-        | atomic claim
+        | atomic claim + 20 minute renewable lease
         v
     analyzing
         |
@@ -23,7 +23,7 @@ queued + caption snapshot
         | qwen3:1.7b editorial anchors
         | deterministic cue-context expansion
         | conservative overlap-boundary dedupe
-        | stale check before writes
+        | heartbeat / lease check around model work and writes
         v
       complete
         |
@@ -32,6 +32,8 @@ queued + caption snapshot
 ```
 
 Errors move an active run to `failed` / workflow `partial_failure`. If the run became stale first, the worker stops without changing the stale state.
+
+If a worker process dies, its lease eventually expires. The next atomic worker claim requeues that run, removes only partial candidates from the abandoned attempt, and issues a new lease. The 20 minute lease is intentionally longer than the initial 900 second maximum model request; successful workers renew it before and after model chunks and before candidate writes.
 
 ## Initial analysis defaults
 
@@ -42,18 +44,21 @@ Errors move an active run to `failed` / workflow `partial_failure`. If the run b
 - model context: 16384
 - CPU threads: 8
 - model request timeout: 900 seconds
+- worker lease: 1200 seconds, renewable
 - maximum anchors returned per chunk: 8
 - deterministic context expansion: 12 seconds before/after the anchor, snapped to canonical cue boundaries
 
 The model is asked for editorial anchors only. Candidate transcript text is rebuilt from the canonical caption cues and is never accepted from model-generated prose.
 
-## Duplicate policy
+## Duplicate and generation policy
 
 Partial and nested overlaps are allowed. The worker removes only anchors whose start and end boundaries are both within 2.5 seconds of an already accepted anchor. This is intentionally conservative so distinct editorial uses are not collapsed merely because their proposed clips overlap.
 
+A new caption checksum or analyzer version creates a new analysis generation and stales the previous non-stale generation. Older generation candidates remain stored for audit/history but are hidden from the active review queue.
+
 ## Concurrency
 
-The initial worker is single-concurrency. The process takes a non-blocking host lock before polling the Bridge. The Bridge also atomically transitions a claimed run from `queued` to `analyzing`, preventing two workers from processing the same run.
+The initial worker is single-concurrency. The process takes a non-blocking host lock before polling the Bridge. The Bridge atomically transitions a claimed run from `queued` to `analyzing` and returns a per-claim lease token. Candidate writes, heartbeats and completion require that live lease.
 
 Run exactly one worker service per analysis host in the initial deployment.
 
@@ -75,7 +80,7 @@ PEERTUBE_CLIPPER_WORKER_LOCK=/tmp/peertube-clipper-analysis-worker.lock
 PEERTUBE_CLIPPER_WORKER_LOG_LEVEL=INFO
 ```
 
-The service token is a server-side credential and must never be exposed to browser JavaScript or logs.
+The service token and worker lease are server-side credentials and must never be exposed to browser JavaScript or logs.
 
 ## Isolated validation
 
