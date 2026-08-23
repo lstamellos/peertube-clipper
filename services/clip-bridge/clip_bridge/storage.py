@@ -70,6 +70,8 @@ class Storage:
                     suggested_start REAL NOT NULL,
                     suggested_end REAL NOT NULL,
                     canonical_transcript TEXT NOT NULL,
+                    category TEXT,
+                    analysis_reason TEXT,
                     status TEXT NOT NULL,
                     editor_start REAL,
                     editor_end REAL,
@@ -84,6 +86,8 @@ class Storage:
             self._ensure_column(db, "analysis_runs", "worker_lease_token", "TEXT")
             self._ensure_column(db, "analysis_runs", "worker_lease_expires_at", "TEXT")
             self._ensure_column(db, "candidates", "analysis_run_id", "TEXT")
+            self._ensure_column(db, "candidates", "category", "TEXT")
+            self._ensure_column(db, "candidates", "analysis_reason", "TEXT")
             db.executescript(
                 """
                 CREATE INDEX IF NOT EXISTS analysis_runs_video_uuid_idx
@@ -204,13 +208,15 @@ class Storage:
                 INSERT INTO candidates(
                     candidate_id, video_uuid, analysis_run_id,
                     anchor_start, anchor_end, suggested_start, suggested_end,
-                    canonical_transcript, status, created_at, updated_at
-                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 'suggested', ?, ?)
+                    canonical_transcript, category, analysis_reason,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'suggested', ?, ?)
                 """,
                 (
                     candidate_id, str(video_uuid), candidate.anchor_start, candidate.anchor_end,
                     candidate.suggested_start, candidate.suggested_end,
-                    candidate.canonical_transcript, now, now,
+                    candidate.canonical_transcript, candidate.category, candidate.analysis_reason,
+                    now, now,
                 ),
             )
             db.execute("UPDATE videos SET status = 'pending_review', updated_at = ? WHERE video_uuid = ?", (now, str(video_uuid)))
@@ -241,14 +247,16 @@ class Storage:
                 INSERT INTO candidates(
                     candidate_id, video_uuid, analysis_run_id,
                     anchor_start, anchor_end, suggested_start, suggested_end,
-                    canonical_transcript, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'suggested', ?, ?)
+                    canonical_transcript, category, analysis_reason,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suggested', ?, ?)
                 """,
                 (
                     candidate_id, str(video_uuid), analysis_run_id,
                     candidate.anchor_start, candidate.anchor_end,
                     candidate.suggested_start, candidate.suggested_end,
-                    candidate.canonical_transcript, now, now,
+                    candidate.canonical_transcript, candidate.category, candidate.analysis_reason,
+                    now, now,
                 ),
             )
             return dict(db.execute("SELECT * FROM candidates WHERE candidate_id = ?", (candidate_id,)).fetchone())
