@@ -41,6 +41,7 @@ video whose channel has an accepted collaborator/editor. No credentials or token
 are printed.
 EOF
 }
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -209,6 +210,8 @@ else
         SELECT u.id, u.username
         FROM \"user\" u
         WHERE u.id NOT IN ($OWNER_ID, $EDITOR_ID)
+          AND u.role = 2
+          AND u.blocked = false
           AND NOT EXISTS (
             SELECT 1
             FROM \"videoChannelCollaborator\" c
