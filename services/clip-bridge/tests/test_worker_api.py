@@ -76,6 +76,8 @@ def test_snapshot_claim_candidate_and_complete_api(tmp_path, monkeypatch):
             "suggested_start": 10,
             "suggested_end": 15,
             "canonical_transcript": "Canonical API caption",
+            "category": "quote",
+            "analysis_reason": "Useful source statement",
         },
     )
     assert without_lease.status_code == 409
@@ -89,13 +91,21 @@ def test_snapshot_claim_candidate_and_complete_api(tmp_path, monkeypatch):
             "suggested_start": 10,
             "suggested_end": 15,
             "canonical_transcript": "Canonical API caption",
+            "category": "quote",
+            "analysis_reason": "Useful source statement",
         },
     )
     assert created.status_code == 200
+    assert created.json()["category"] == "quote"
+    assert created.json()["analysis_reason"] == "Useful source statement"
 
     state_while_analyzing = client.get(f"/v1/videos/{VIDEO}", headers=headers)
     assert state_while_analyzing.status_code == 200
     assert state_while_analyzing.json()["candidates"] == []
+    public_run = state_while_analyzing.json()["analysis_runs"][0]
+    assert "worker_lease" not in public_run
+    assert "worker_lease_token" not in public_run
+    assert "worker_lease_expires_at" not in public_run
 
     completed = client.patch(
         f"/v1/videos/{VIDEO}/analysis-runs/{run['analysis_run_id']}/worker-state",
@@ -107,4 +117,7 @@ def test_snapshot_claim_candidate_and_complete_api(tmp_path, monkeypatch):
     state_after = client.get(f"/v1/videos/{VIDEO}", headers=headers)
     assert state_after.status_code == 200
     assert state_after.json()["video"]["status"] == "pending_review"
-    assert len(state_after.json()["candidates"]) == 1
+    visible = state_after.json()["candidates"]
+    assert len(visible) == 1
+    assert visible[0]["category"] == "quote"
+    assert visible[0]["analysis_reason"] == "Useful source statement"
