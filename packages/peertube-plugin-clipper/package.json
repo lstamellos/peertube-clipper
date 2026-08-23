@@ -21,6 +21,7 @@
   "files": [
     "main.js",
     "permission.js",
+    "readiness.js",
     "client-scripts",
     "static"
   ],
