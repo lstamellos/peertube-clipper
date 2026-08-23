@@ -25,6 +25,7 @@ UNRELATED_TOKEN=""
 BRIDGE_TOKEN=""
 WORKFLOW_CREATED=0
 CLEANUP_OK=1
+LAST_CANDIDATE=""
 
 say() {
   printf '%s\n' "$*"
@@ -78,12 +79,14 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-for value in PEERTUBE_URL PEERTUBE_STORAGE VIDEO_UUID OWNER_USER EDITOR_USER UNRELATED_USER; do
-  eval "current=\${$value}"
-  [ -n "$current" ] || die "missing_${value}"
-done
+[ -n "$PEERTUBE_URL" ] || die "missing_peertube_url"
+[ -n "$PEERTUBE_STORAGE" ] || die "missing_peertube_storage"
+[ -n "$VIDEO_UUID" ] || die "missing_video_uuid"
+[ -n "$OWNER_USER" ] || die "missing_owner"
+[ -n "$EDITOR_USER" ] || die "missing_editor"
+[ -n "$UNRELATED_USER" ] || die "missing_unrelated"
 
-for command in curl python3 openssl psql; do
+for command in curl node python3 openssl psql; do
   command -v "$command" >/dev/null 2>&1 || die "missing_command_$command"
 done
 
@@ -153,6 +156,7 @@ cleanup() {
   revoke_token "$UNRELATED_TOKEN" unrelated >/dev/null 2>&1 || true
 
   if [ "$WORKFLOW_CREATED" -eq 1 ] && [ -n "$BRIDGE_TOKEN" ]; then
+    local result code file
     result="$(bridge_json DELETE "/v1/videos/$VIDEO_UUID")"
     code="${result%%$'\t'*}"
     file="${result#*$'\t'}"
@@ -185,6 +189,12 @@ PLUGIN_VERSION="$(node -e 'console.log(require(process.argv[1]).version)' "$PLUG
 [ -n "$PLUGIN_VERSION" ] || die "plugin_version_unavailable"
 PLUGIN_BASE="${PEERTUBE_URL%/}/plugins/clipper/${PLUGIN_VERSION}/router"
 
+preflight="$(bridge_json GET "/v1/videos/$VIDEO_UUID")"
+pre_code="${preflight%%$'\t'*}"
+pre_file="${preflight#*$'\t'}"
+rm -f "$pre_file" 2>/dev/null || true
+[ "$pre_code" = "404" ] || die "source_already_has_clipper_workflow"
+
 if [ -z "$DB_NAME" ]; then
   DBS="$(psql_postgres -Atqc 'SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname' 2>/dev/null || true)"
   while IFS= read -r candidate; do
@@ -195,36 +205,37 @@ if [ -z "$DB_NAME" ]; then
 fi
 [ -n "$DB_NAME" ] || die "peertube_database_not_detected"
 
-OWNER_ID="$(psql_postgres -d "$DB_NAME" -Atq -v username="$OWNER_USER" -c 'SELECT id FROM "user" WHERE username = :'"'"'username'"'"' LIMIT 1' 2>/dev/null || true)"
-EDITOR_ID="$(psql_postgres -d "$DB_NAME" -Atq -v username="$EDITOR_USER" -c 'SELECT id FROM "user" WHERE username = :'"'"'username'"'"' LIMIT 1' 2>/dev/null || true)"
-UNRELATED_ID="$(psql_postgres -d "$DB_NAME" -Atq -v username="$UNRELATED_USER" -c 'SELECT id FROM "user" WHERE username = :'"'"'username'"'"' LIMIT 1' 2>/dev/null || true)"
+OWNER_ID="$(psql_postgres -d "$DB_NAME" -Atq -v username="$OWNER_USER" -c "SELECT id FROM \"user\" WHERE username = :'username' LIMIT 1" 2>/dev/null || true)"
+EDITOR_ID="$(psql_postgres -d "$DB_NAME" -Atq -v username="$EDITOR_USER" -c "SELECT id FROM \"user\" WHERE username = :'username' LIMIT 1" 2>/dev/null || true)"
+UNRELATED_ID="$(psql_postgres -d "$DB_NAME" -Atq -v username="$UNRELATED_USER" -c "SELECT id FROM \"user\" WHERE username = :'username' LIMIT 1" 2>/dev/null || true)"
 [ -n "$OWNER_ID" ] && [ -n "$EDITOR_ID" ] && [ -n "$UNRELATED_ID" ] || die "test_actor_lookup_failed"
 
 create_session() {
   local username="$1" access refresh inserted
   access="$(openssl rand -hex 32)" || return 1
   refresh="$(openssl rand -hex 32)" || return 1
-  inserted="$(psql_postgres -d "$DB_NAME" -Atq -v username="$username" -v access="$access" -v refresh="$refresh" -c '
-    WITH selected_user AS (
-      SELECT id FROM "user" WHERE username = :'"'"'username'"'"' LIMIT 1
-    ), selected_client AS (
-      SELECT id FROM "oAuthClient" ORDER BY id LIMIT 1
-    )
-    INSERT INTO "oAuthToken"(
-      "accessToken", "accessTokenExpiresAt", "refreshToken", "refreshTokenExpiresAt",
-      "loginDevice", "loginIP", "loginDate",
-      "lastActivityDevice", "lastActivityIP", "lastActivityDate",
-      "createdAt", "updatedAt", "userId", "oAuthClientId"
-    )
-    SELECT
-      :'"'"'access'"'"', now() + interval '"'"'3 minutes'"'"',
-      :'"'"'refresh'"'"', now() + interval '"'"'5 minutes'"'"',
-      '"'"'PeerTube Clipper E2E'"'"', '"'"'127.0.0.1'"'"', now(),
-      '"'"'PeerTube Clipper E2E'"'"', '"'"'127.0.0.1'"'"', now(),
-      now(), now(), selected_user.id, selected_client.id
-    FROM selected_user CROSS JOIN selected_client
-    RETURNING id
-  ' 2>/dev/null || true)"
+  inserted="$(psql_postgres -d "$DB_NAME" -Atq -v username="$username" -v access="$access" -v refresh="$refresh" <<'SQL'
+WITH selected_user AS (
+  SELECT id FROM "user" WHERE username = :'username' LIMIT 1
+), selected_client AS (
+  SELECT id FROM "oAuthClient" ORDER BY id LIMIT 1
+)
+INSERT INTO "oAuthToken"(
+  "accessToken", "accessTokenExpiresAt", "refreshToken", "refreshTokenExpiresAt",
+  "loginDevice", "loginIP", "loginDate",
+  "lastActivityDevice", "lastActivityIP", "lastActivityDate",
+  "createdAt", "updatedAt", "userId", "oAuthClientId"
+)
+SELECT
+  :'access', now() + interval '3 minutes',
+  :'refresh', now() + interval '5 minutes',
+  'PeerTube Clipper E2E', '127.0.0.1', now(),
+  'PeerTube Clipper E2E', '127.0.0.1', now(),
+  now(), now(), selected_user.id, selected_client.id
+FROM selected_user CROSS JOIN selected_client
+RETURNING id;
+SQL
+)"
   [ -n "$inserted" ] || return 1
   printf '%s' "$access"
 }
@@ -234,34 +245,31 @@ EDITOR_TOKEN="$(create_session "$EDITOR_USER")" || die "editor_test_session_fail
 UNRELATED_TOKEN="$(create_session "$UNRELATED_USER")" || die "unrelated_test_session_failed"
 say "temporary_sessions_created=PASS"
 
-preflight="$(bridge_json GET "/v1/videos/$VIDEO_UUID")"
-pre_code="${preflight%%$'\t'*}"
-pre_file="${preflight#*$'\t'}"
-rm -f "$pre_file" 2>/dev/null || true
-[ "$pre_code" = "404" ] || die "source_already_has_clipper_workflow"
-
 seed_candidate() {
-  local body="$1" result code file cid
+  local body="$1" result code file
   result="$(bridge_json POST "/v1/videos/$VIDEO_UUID/candidates" "$body")"
   code="${result%%$'\t'*}"
   file="${result#*$'\t'}"
   if [ "$code" != "200" ]; then rm -f "$file"; return 1; fi
-  cid="$(cat "$file" | json_field candidate_id 2>/dev/null || true)"
+  LAST_CANDIDATE="$(cat "$file" | json_field candidate_id 2>/dev/null || true)"
   rm -f "$file"
-  [ -n "$cid" ] || return 1
+  [ -n "$LAST_CANDIDATE" ] || return 1
   WORKFLOW_CREATED=1
-  printf '%s' "$cid"
+  return 0
 }
 
-C1="$(seed_candidate '{"anchor_start":60,"anchor_end":65,"suggested_start":55,"suggested_end":80,"canonical_transcript":"PeerTube Clipper temporary E2E candidate one."}')" || die "seed_candidate_1_failed"
-C2="$(seed_candidate '{"anchor_start":95,"anchor_end":100,"suggested_start":90,"suggested_end":120,"canonical_transcript":"PeerTube Clipper temporary E2E candidate two."}')" || die "seed_candidate_2_failed"
-C3="$(seed_candidate '{"anchor_start":155,"anchor_end":160,"suggested_start":150,"suggested_end":180,"canonical_transcript":"PeerTube Clipper temporary E2E candidate three."}')" || die "seed_candidate_3_failed"
+seed_candidate '{"anchor_start":60,"anchor_end":65,"suggested_start":55,"suggested_end":80,"canonical_transcript":"PeerTube Clipper temporary E2E candidate one."}' || die "seed_candidate_1_failed"
+C1="$LAST_CANDIDATE"
+seed_candidate '{"anchor_start":95,"anchor_end":100,"suggested_start":90,"suggested_end":120,"canonical_transcript":"PeerTube Clipper temporary E2E candidate two."}' || die "seed_candidate_2_failed"
+C2="$LAST_CANDIDATE"
+seed_candidate '{"anchor_start":155,"anchor_end":160,"suggested_start":150,"suggested_end":180,"canonical_transcript":"PeerTube Clipper temporary E2E candidate three."}' || die "seed_candidate_3_failed"
+C3="$LAST_CANDIDATE"
 say "temporary_candidates_seeded=3"
 
 owner_get="$(http_json GET "$PLUGIN_BASE/videos/$VIDEO_UUID/state" "$OWNER_TOKEN")"
 owner_code="${owner_get%%$'\t'*}"; owner_file="${owner_get#*$'\t'}"
 [ "$owner_code" = "200" ] || { rm -f "$owner_file"; die "owner_get_expected_200_got_$owner_code"; }
-OWNER_COUNT="$(cat "$owner_file" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["workflow"]["candidates"]))' 2>/dev/null || true)"
+OWNER_COUNT="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["workflow"]["candidates"]))' "$owner_file" 2>/dev/null || true)"
 rm -f "$owner_file"
 [ "$OWNER_COUNT" = "3" ] || die "owner_candidate_count_mismatch"
 say "owner_access=PASS"
@@ -269,7 +277,7 @@ say "owner_access=PASS"
 editor_get="$(http_json GET "$PLUGIN_BASE/videos/$VIDEO_UUID/state" "$EDITOR_TOKEN")"
 editor_code="${editor_get%%$'\t'*}"; editor_file="${editor_get#*$'\t'}"
 [ "$editor_code" = "200" ] || { rm -f "$editor_file"; die "editor_get_expected_200_got_$editor_code"; }
-EDITOR_COUNT="$(cat "$editor_file" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["workflow"]["candidates"]))' 2>/dev/null || true)"
+EDITOR_COUNT="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["workflow"]["candidates"]))' "$editor_file" 2>/dev/null || true)"
 rm -f "$editor_file"
 [ "$EDITOR_COUNT" = "3" ] || die "editor_candidate_count_mismatch"
 say "editor_shared_state_access=PASS"
@@ -305,13 +313,7 @@ say "editor_reject=PASS"
 editor_seen="$(http_json GET "$PLUGIN_BASE/videos/$VIDEO_UUID/state" "$EDITOR_TOKEN")"
 editor_seen_code="${editor_seen%%$'\t'*}"; editor_seen_file="${editor_seen#*$'\t'}"
 [ "$editor_seen_code" = "200" ] || { rm -f "$editor_seen_file"; die "editor_shared_refresh_failed"; }
-C1_STATUS="$(python3 - "$C1" < "$editor_seen_file" <<'PY'
-import json, sys
-cid=sys.argv[1]
-d=json.load(sys.stdin)
-print(next(c['status'] for c in d['workflow']['candidates'] if c['candidate_id']==cid))
-PY
-)"
+C1_STATUS="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); cid=sys.argv[2]; print(next(c["status"] for c in d["workflow"]["candidates"] if c["candidate_id"] == cid))' "$editor_seen_file" "$C1" 2>/dev/null || true)"
 rm -f "$editor_seen_file"
 [ "$C1_STATUS" = "edited" ] || die "shared_edit_not_visible"
 say "cross_user_shared_state=PASS"
@@ -324,14 +326,14 @@ rm -f "$owner_final_file"
 final_get="$(http_json GET "$PLUGIN_BASE/videos/$VIDEO_UUID/state" "$EDITOR_TOKEN")"
 final_code="${final_get%%$'\t'*}"; final_file="${final_get#*$'\t'}"
 [ "$final_code" = "200" ] || { rm -f "$final_file"; die "final_state_read_failed"; }
-FINAL_WORKFLOW="$(cat "$final_file" | python3 -c 'import json,sys; print(json.load(sys.stdin)["workflow"]["video"]["status"])' 2>/dev/null || true)"
+FINAL_WORKFLOW="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow"]["video"]["status"])' "$final_file" 2>/dev/null || true)"
 rm -f "$final_file"
 [ "$FINAL_WORKFLOW" = "reviewed" ] || die "final_workflow_not_reviewed"
 say "review_lifecycle=PASS"
 
-revoke_token "$OWNER_TOKEN" owner || true; OWNER_TOKEN=""
-revoke_token "$EDITOR_TOKEN" editor || true; EDITOR_TOKEN=""
-revoke_token "$UNRELATED_TOKEN" unrelated || true; UNRELATED_TOKEN=""
+if revoke_token "$OWNER_TOKEN" owner; then OWNER_TOKEN=""; fi
+if revoke_token "$EDITOR_TOKEN" editor; then EDITOR_TOKEN=""; fi
+if revoke_token "$UNRELATED_TOKEN" unrelated; then UNRELATED_TOKEN=""; fi
 
 cleanup_result="$(bridge_json DELETE "/v1/videos/$VIDEO_UUID")"
 cleanup_code="${cleanup_result%%$'\t'*}"; cleanup_file="${cleanup_result#*$'\t'}"
@@ -348,7 +350,7 @@ say "workflow_cleanup_verified=PASS"
 
 trap - EXIT HUP INT TERM
 
-if [ "$CLEANUP_OK" -eq 1 ]; then
+if [ "$CLEANUP_OK" -eq 1 ] && [ -z "$OWNER_TOKEN$EDITOR_TOKEN$UNRELATED_TOKEN" ]; then
   say "temporary_sessions_cleanup=PASS"
   say "E2E_RESULT=PASS"
   exit 0
