@@ -29,6 +29,16 @@ CandidateStatus = Literal[
     "failed",
 ]
 
+CandidateCategory = Literal[
+    "quote",
+    "argument",
+    "revelation",
+    "context",
+    "conflict",
+    "explanation",
+    "other",
+]
+
 AnalysisRunStatus = Literal[
     "queued",
     "analyzing",
@@ -55,6 +65,8 @@ class CandidateCreate(BaseModel):
     suggested_start: float = Field(ge=0)
     suggested_end: float = Field(gt=0)
     canonical_transcript: str = Field(min_length=1)
+    category: CandidateCategory | None = None
+    analysis_reason: str | None = Field(default=None, max_length=500)
 
 
 class CandidateReview(BaseModel):
