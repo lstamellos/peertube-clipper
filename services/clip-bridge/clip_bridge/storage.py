@@ -346,7 +346,6 @@ class Storage:
             obsolete_ids = [row["analysis_run_id"] for row in obsolete]
             if obsolete_ids:
                 placeholders = ",".join("?" for _ in obsolete_ids)
-                db.execute(f"DELETE FROM candidates WHERE analysis_run_id IN ({placeholders})", tuple(obsolete_ids))
                 db.execute(
                     f"""
                     UPDATE analysis_runs
@@ -565,9 +564,17 @@ class Storage:
             }
             if update.status not in allowed.get(current_status, set()):
                 raise ValueError(f"invalid analysis transition: {current_status} -> {update.status}")
+            clear_lease = update.status in {"complete", "failed", "stale"}
             db.execute(
-                "UPDATE analysis_runs SET status = ?, error = ?, updated_at = ? WHERE analysis_run_id = ? AND video_uuid = ?",
-                (update.status, update.error, now, analysis_run_id, str(video_uuid)),
+                """
+                UPDATE analysis_runs
+                SET status = ?, error = ?,
+                    worker_lease_token = CASE WHEN ? THEN NULL ELSE worker_lease_token END,
+                    worker_lease_expires_at = CASE WHEN ? THEN NULL ELSE worker_lease_expires_at END,
+                    updated_at = ?
+                WHERE analysis_run_id = ? AND video_uuid = ?
+                """,
+                (update.status, update.error, clear_lease, clear_lease, now, analysis_run_id, str(video_uuid)),
             )
             if update.status == "queued":
                 video_status = "ready_for_analysis"
