@@ -45,6 +45,10 @@ class VideoState(BaseModel):
     updated_at: datetime
 
 
+class VideoStatusUpdate(BaseModel):
+    status: WorkflowStatus
+
+
 class CandidateCreate(BaseModel):
     anchor_start: float = Field(ge=0)
     anchor_end: float = Field(gt=0)
