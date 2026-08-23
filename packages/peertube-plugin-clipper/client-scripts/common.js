@@ -29,15 +29,27 @@ function renderWorkflow (rootEl, peertubeHelpers, videoUuid, payload) {
   const workflow = payload.workflow || {}
   const video = workflow.video || {}
   const candidates = Array.isArray(workflow.candidates) ? workflow.candidates : []
+  const analysisRuns = Array.isArray(workflow.analysis_runs) ? workflow.analysis_runs : []
   const auth = payload.authorization || {}
   const name = payload.sourceVideo?.name || videoUuid
+
+  const latestRun = analysisRuns[0] || null
+  const analysisLabel = latestRun ? latestRun.status : 'not queued'
 
   const summary = `
     <div class="peertube-clipper-summary">
       <div><span>Source video</span><strong>${escapeHtml(name)}</strong></div>
       <div><span>Workflow</span><strong>${escapeHtml(video.status || 'unknown')}</strong></div>
       <div><span>Candidates</span><strong>${candidates.length}</strong></div>
+      <div><span>Analysis</span><strong>${escapeHtml(analysisLabel)}</strong></div>
       <div><span>Access</span><strong>${escapeHtml(auth.via || 'manage permission')}</strong></div>
+    </div>
+  `
+
+  const readiness = `
+    <div class="peertube-clipper-readiness">
+      <button type="button" class="peertube-button grey-button" data-clipper-readiness>Check readiness</button>
+      <span class="peertube-clipper-muted" data-clipper-readiness-result>Checks PeerTube transcodes and canonical captions; it does not start rendering.</span>
     </div>
   `
 
@@ -45,7 +57,38 @@ function renderWorkflow (rootEl, peertubeHelpers, videoUuid, payload) {
     ? candidates.map((candidate, index) => candidateCard(videoUuid, candidate, index)).join('')
     : '<div class="peertube-clipper-empty"><strong>No suggestions yet.</strong><p>The shared workflow exists for this video, but analysis has not populated candidates.</p></div>'
 
-  rootEl.innerHTML = pageShell('Clip review', `${summary}<div class="peertube-clipper-candidates">${list}</div>`)
+  rootEl.innerHTML = pageShell('Clip review', `${summary}${readiness}<div class="peertube-clipper-candidates">${list}</div>`)
+
+  const readinessButton = rootEl.querySelector('[data-clipper-readiness]')
+  readinessButton?.addEventListener('click', async () => {
+    const resultEl = rootEl.querySelector('[data-clipper-readiness-result]')
+    readinessButton.disabled = true
+    if (resultEl) resultEl.textContent = 'Checking PeerTube readiness…'
+
+    try {
+      const result = await apiRequest(
+        peertubeHelpers,
+        `/videos/${encodeURIComponent(videoUuid)}/readiness`,
+        { method: 'POST' }
+      )
+
+      if (result.ready) {
+        const created = result.analysisClaim?.created === true
+        const message = created
+          ? `Ready. Analysis run queued (${result.captionLanguage}).`
+          : `Ready. Matching analysis run already exists (${result.captionLanguage}).`
+        peertubeHelpers.notifier.success(message)
+      } else {
+        peertubeHelpers.notifier.info(`Not ready: ${result.reason}.`)
+      }
+
+      await mountReviewPage(rootEl, peertubeHelpers)
+    } catch (error) {
+      peertubeHelpers.notifier.error(error.message || 'Could not evaluate readiness.')
+      readinessButton.disabled = false
+      if (resultEl) resultEl.textContent = error.message || 'Readiness check failed.'
+    }
+  })
 
   rootEl.querySelectorAll('[data-clipper-action]').forEach(button => {
     button.addEventListener('click', async event => {
