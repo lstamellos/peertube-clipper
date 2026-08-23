@@ -11,14 +11,17 @@ The project is built around a simple rule: automated analysis may discover candi
 The repository currently provides:
 
 - a PeerTube plugin package and temporary per-video entry surface;
-- a private Clip Bridge service with persistent shared per-video/candidate state;
+- authoritative PeerTube readiness checks using transcode/transcription state and canonical caption bytes;
+- a private Clip Bridge service with persistent shared per-video/candidate/analysis state;
+- immutable canonical VTT snapshots tied to analysis-run checksums;
+- a local single-concurrency analysis worker with stale-generation and worker-lease protection;
 - a general installer for native or containerized companion services;
 - native and Docker PeerTube plugin installation paths;
 - server-side Bridge configuration that does not expose service credentials to the browser;
 - documentation for architecture, permissions, installation, operations and security;
 - CI checks for Node, shell and Python components.
 
-Automatic analysis, the final per-video review UI and renderer adapters remain under active development.
+The analysis worker is still in isolated validation and is not enabled in production by default. Renderer adapters remain under active development.
 
 ## Goals
 
@@ -46,24 +49,30 @@ PeerTube plugin (UI + authorization façade)
         ▼
 Clip Bridge
   ├─ readiness gate
-  ├─ canonical transcript adapter
+  ├─ immutable canonical caption snapshots
   ├─ candidate/state persistence
-  ├─ analysis adapter
-  └─ renderer adapter
+  └─ analysis-run queue / worker leases
         │
-        ├─ local/remote analysis backend
-        └─ renderer backend
+        ▼
+Local analysis worker
+  └─ Ollama / qwen3:1.7b
+        │
+        ▼
+Shared editor review
+        │
+        └─ renderer adapter (future)
 ```
 
 The preferred final UX is a `Clips` page inside the Manage area of each source video. Until PeerTube exposes a supported child-page extension point for Video Manage, the plugin uses supported plugin surfaces and keeps the review application portable.
 
-See [Architecture](docs/ARCHITECTURE.md), [Permissions](docs/PERMISSIONS.md) and [Installation](docs/INSTALLATION.md).
+See [Architecture](docs/ARCHITECTURE.md), [Permissions](docs/PERMISSIONS.md), [Analysis worker](docs/ANALYSIS-WORKER.md) and [Installation](docs/INSTALLATION.md).
 
 ## Repository layout
 
 ```text
 packages/peertube-plugin-clipper/   PeerTube plugin façade/UI
 services/clip-bridge/               Private orchestration/state service
+services/analysis-worker/           Local canonical-caption analysis worker
 docs/                               Architecture and operations documentation
 scripts/                            Installer and maintenance entry points
 ```
@@ -84,7 +93,7 @@ Companion service modes:
 
 PeerTube deployment modes:
 
-- `native` — installs the plugin with PeerTube's supported `npm run plugin:install` mechanism;
+- `native` — installs the plugin with PeerTube's supported `npm run plugin:install` mechanism using a persistent local dependency source;
 - `docker` — installs the plugin into a running PeerTube Compose service;
 - `skip` — installs/configures companion services only.
 
@@ -98,14 +107,26 @@ Examples are in [docs/INSTALLATION.md](docs/INSTALLATION.md).
 - Review actions retain acting-user audit attribution.
 - The Bridge is private/loopback by default and requires a service credential.
 - The browser never receives that service credential.
+- Analysis-run caption snapshots are checksum-bound before a worker can claim them.
+- Worker candidate writes and completion require a live per-claim lease.
+- Stale or incomplete analysis generations are hidden from the active review queue.
 - The PeerTube process is never granted Docker-socket, sudo, package-manager or systemd access by this project.
 
 ## Development checks
 
+Full isolated Phase 2C validation:
+
+```sh
+bash scripts/check-phase2c-isolated.sh
+```
+
+Individual checks:
+
 ```sh
 npm run check
-python3 -m pip install -e 'services/clip-bridge[dev]'
-pytest -q services/clip-bridge/tests
+python3 -m pip install -e 'services/clip-bridge[dev]' -e 'services/analysis-worker[dev]'
+python3 -m compileall -q services/clip-bridge/clip_bridge services/analysis-worker/clipper_worker
+pytest -q services/clip-bridge/tests services/analysis-worker/tests
 ```
 
 ## License
