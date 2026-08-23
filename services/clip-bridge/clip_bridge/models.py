@@ -29,6 +29,14 @@ CandidateStatus = Literal[
     "failed",
 ]
 
+AnalysisRunStatus = Literal[
+    "queued",
+    "analyzing",
+    "complete",
+    "failed",
+    "stale",
+]
+
 
 class VideoState(BaseModel):
     video_uuid: UUID
@@ -50,3 +58,16 @@ class CandidateReview(BaseModel):
     editor_start: float | None = Field(default=None, ge=0)
     editor_end: float | None = Field(default=None, gt=0)
     acted_by_user_id: int = Field(gt=0)
+
+
+class AnalysisRunClaim(BaseModel):
+    caption_language: str = Field(min_length=1, max_length=64)
+    caption_checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
+    analyzer_version: str = Field(min_length=1, max_length=200)
+    model: str = Field(min_length=1, max_length=200)
+    prompt_version: str = Field(min_length=1, max_length=200)
+
+
+class AnalysisRunUpdate(BaseModel):
+    status: AnalysisRunStatus
+    error: str | None = Field(default=None, max_length=4000)
