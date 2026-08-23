@@ -4,34 +4,60 @@
 
 Access is determined by whether the current PeerTube user can manage the **source video/channel**, not by whether that user uploaded the video.
 
-This is necessary for collaborative channels: owner, administrators and channel collaborators/editors must see the same candidate queue when PeerTube grants them management rights.
+This is necessary for collaborative channels: owner, users with instance-wide video update rights, and accepted channel collaborators/editors must see the same candidate queue when PeerTube grants them management rights.
 
-## Native PeerTube semantics
+## PeerTube 8.2 compatibility adapter
 
-PeerTube's own video-management authorization resolves through channel management rights and channel collaborator membership. The project should reuse that semantic boundary rather than maintaining an independent editor list.
+PeerTube Clipper now implements a version-scoped adapter matching PeerTube 8.2 video-management semantics:
 
-## Plugin API limitation
+1. the video must be local;
+2. a user with `UPDATE_ANY_VIDEO` is allowed;
+3. the owner of the video's channel account is allowed;
+4. an `ACCEPTED` `videoChannelCollaborator` for that channel is allowed;
+5. all other users are denied.
 
-At the time this scaffold was created, the public plugin helper API exposes the authenticated user and video loaders, but no documented `canManageVideo()` helper equivalent to PeerTube's internal validator.
+The adapter uses the authenticated `UserModel` returned by `peertubeHelpers.user.getAuthUser()`, including its native `hasRight()` method, and a read-only database query for channel ownership/collaboration.
 
-The implementation therefore keeps authorization behind a `PermissionProvider` boundary. The production adapter must be validated against the target PeerTube version before write operations are enabled.
+Compatibility constants are intentionally explicit and covered by tests for PeerTube 8.2:
 
-Acceptable approaches, in preference order:
+```text
+UserRight.UPDATE_ANY_VIDEO = 17
+VideoChannelCollaboratorState.ACCEPTED = 2
+```
 
-1. a future public PeerTube permission helper;
-2. a small upstreamable PeerTube plugin-API extension exposing native `canManageVideo` semantics;
-3. a compatibility adapter that delegates to an existing native PeerTube endpoint whose authorization uses the same management validator;
-4. a version-scoped database compatibility adapter, only with explicit tests.
+If PeerTube changes these public enum values or exposes a supported `canManageVideo()` plugin helper, the adapter should be updated to prefer the native public helper.
 
-Do not authorize based only on `video.account`/uploader identity.
+## Authorization boundary
+
+The browser is never trusted to supply an editor identity or an authorization decision.
+
+```text
+browser
+  ↓ PeerTube OAuth session
+plugin server
+  ↓ getAuthUser()
+  ↓ per-video manage permission adapter
+  ↓ inject authenticated user.id as audit actor
+Clip Bridge
+```
+
+The Clip Bridge does not independently reimplement PeerTube account/channel authorization. It accepts requests only from the plugin service credential and stores the authenticated PeerTube user ID supplied by the plugin server.
 
 ## Shared review state
 
-All authorized editors see the same candidate state. Per-user data is audit metadata only:
+All authorized editors see the same source-video candidate state. Per-user data is audit metadata only:
 
 ```text
-approved_by
-rejected_by
-edited_by
+acted_by_user_id
 acted_at
 ```
+
+Candidate approval/rejection/boundary changes never create a private per-editor copy of the queue.
+
+## Future upstream path
+
+Preferred long-term options remain:
+
+1. use a public PeerTube `canManageVideo()` helper if one is added;
+2. upstream a small generic plugin-API extension exposing native video-management authorization;
+3. remove the compatibility SQL adapter when such an API is available.
