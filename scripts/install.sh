@@ -365,8 +365,9 @@ write_native_plugin_config() {
 
 install_plugin_native() {
   [ -d "$PT_ROOT" ] && [ -f "$PT_ROOT/package.json" ] || die "Invalid PeerTube root: $PT_ROOT"
+  [ "$(id -u)" -eq 0 ] || die "Native PeerTube plugin installation requires root"
 
-  local base stage_parent stage
+  local base
   base="$(find_native_base)"
   [ -n "$PT_CONFIG" ] || PT_CONFIG="$base/config"
   [ -d "$PT_CONFIG" ] || die "Pass --peertube-config-dir"
@@ -374,29 +375,21 @@ install_plugin_native() {
   [ -d "$PT_STORAGE" ] || die "Pass --peertube-storage-dir"
   [ -n "$PT_USER" ] || PT_USER="$(stat -c '%U' "$PT_ROOT" 2>/dev/null || printf peertube)"
 
-  stage_parent="$(mktemp -d /tmp/peertube-clipper-stage.XXXXXX)" || die "Cannot create plugin staging parent"
-  stage="$stage_parent/$PLUGIN_NAME"
+  local helper=(
+    bash "$ROOT/scripts/install-plugin-native-stable.sh"
+    --peertube-root "$PT_ROOT"
+    --peertube-user "$PT_USER"
+    --peertube-config-dir "$PT_CONFIG"
+    --peertube-storage-dir "$PT_STORAGE"
+    --no-restart
+  )
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    say "DRY-RUN: stage plugin at $stage"
+    "${helper[@]}" --dry-run || die "Stable native plugin installer dry-run failed"
   else
-    mkdir -p "$stage" || die "Cannot create plugin staging directory"
-    cp -a "$PLUGIN/." "$stage/" || die "Cannot stage plugin"
-    [ "$(basename "$stage")" = "$PLUGIN_NAME" ] || die "Invalid plugin staging basename"
-    normalize_public_tree "$stage" || die "Cannot normalize plugin staging permissions"
-    chmod 755 "$stage_parent" "$stage" || die "Cannot make plugin staging traversable"
+    "${helper[@]}" || die "PeerTube plugin installation failed"
   fi
 
-  if [ "$DRY_RUN" -eq 1 ]; then
-    say "DRY-RUN: install plugin as $PT_USER from $stage"
-  else
-    ( cd "$PT_ROOT" && runuser -u "$PT_USER" -- env NODE_CONFIG_DIR="$PT_CONFIG" NODE_ENV=production npm run plugin:install -- --plugin-path "$stage" ) || {
-      rm -rf "$stage_parent" 2>/dev/null || true
-      die "PeerTube plugin installation failed"
-    }
-  fi
-
-  rm -rf "$stage_parent" 2>/dev/null || true
   [ -n "$PT_PLUGIN_DATA" ] || PT_PLUGIN_DATA="$PT_STORAGE/plugins/data/$PLUGIN_NAME"
   write_native_plugin_config
 
