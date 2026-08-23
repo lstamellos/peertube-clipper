@@ -180,7 +180,7 @@ def get_caption_snapshot(video_uuid: UUID, analysis_run_id: str) -> Response:
     "/v1/analysis-runs/claim-next",
     dependencies=[Depends(require_service_token)],
 )
-def claim_next_analysis_run() -> Response | dict:
+def claim_next_analysis_run():
     run = storage.claim_next_analysis_run()
     if run is None:
         return Response(status_code=204)
