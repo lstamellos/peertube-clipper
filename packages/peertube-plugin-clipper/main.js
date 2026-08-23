@@ -1,5 +1,6 @@
 const fs = require('fs/promises')
 const path = require('path')
+const { canManageVideo } = require('./permission')
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:18100'
 const CONFIG_FILE = 'bridge.json'
@@ -39,24 +40,120 @@ async function register ({
     return res.status(status.ok ? 200 : 503).json(status)
   })
 
-  // Phase 2A intentionally keeps workflow data disabled until the
-  // PeerTube-native per-video permission adapter is validated end to end.
   router.get('/videos/:uuid/state', async (req, res) => {
-    const user = await peertubeHelpers.user.getAuthUser(res)
-    if (!user) return res.status(401).json({ error: 'authentication_required' })
+    const context = await requireVideoManager({ req, res, peertubeHelpers })
+    if (!context) return
 
-    const video = await peertubeHelpers.videos.loadByIdOrUUID(req.params.uuid)
-    if (!video) return res.status(404).json({ error: 'video_not_found' })
+    try {
+      await bridgeRequest({
+        settingsManager,
+        peertubeHelpers,
+        method: 'PUT',
+        route: `/v1/videos/${encodeURIComponent(req.params.uuid)}`
+      })
 
-    return res.status(501).json({
-      error: 'permission_adapter_not_enabled',
-      message: 'Per-video review data remains disabled until PeerTube-native manage-video permission semantics are validated.'
-    })
+      const state = await bridgeRequest({
+        settingsManager,
+        peertubeHelpers,
+        method: 'GET',
+        route: `/v1/videos/${encodeURIComponent(req.params.uuid)}`
+      })
+
+      return res.json({
+        authorization: context.permission,
+        sourceVideo: {
+          uuid: req.params.uuid,
+          name: context.video.name || null
+        },
+        workflow: state.body
+      })
+    } catch (error) {
+      peertubeHelpers.logger.error('PeerTube Clipper state proxy failed: %s', error?.message || error)
+      return res.status(502).json({ error: 'bridge_unavailable' })
+    }
+  })
+
+  router.patch('/videos/:uuid/candidates/:candidateId', async (req, res) => {
+    const context = await requireVideoManager({ req, res, peertubeHelpers })
+    if (!context) return
+
+    const review = normalizeReviewBody(req.body)
+    if (!review.ok) return res.status(422).json({ error: review.error })
+
+    try {
+      const result = await bridgeRequest({
+        settingsManager,
+        peertubeHelpers,
+        method: 'PATCH',
+        route: `/v1/videos/${encodeURIComponent(req.params.uuid)}/candidates/${encodeURIComponent(req.params.candidateId)}`,
+        json: {
+          status: review.status,
+          editor_start: review.editorStart,
+          editor_end: review.editorEnd,
+          acted_by_user_id: context.user.id
+        }
+      })
+
+      return res.status(result.status).json(result.body)
+    } catch (error) {
+      peertubeHelpers.logger.error('PeerTube Clipper review proxy failed: %s', error?.message || error)
+      return res.status(502).json({ error: 'bridge_unavailable' })
+    }
   })
 }
 
 async function unregister () {
   return
+}
+
+async function requireVideoManager ({ req, res, peertubeHelpers }) {
+  const user = await peertubeHelpers.user.getAuthUser(res)
+  if (!user) {
+    res.status(401).json({ error: 'authentication_required' })
+    return null
+  }
+
+  const video = await peertubeHelpers.videos.loadByIdOrUUID(req.params.uuid)
+  if (!video) {
+    res.status(404).json({ error: 'video_not_found' })
+    return null
+  }
+
+  const permission = await canManageVideo({
+    videoUuid: req.params.uuid,
+    video,
+    user,
+    peertubeHelpers
+  })
+
+  if (!permission.allowed) {
+    const status = permission.reason === 'video_not_found' ? 404 : 403
+    res.status(status).json({ error: permission.reason })
+    return null
+  }
+
+  return { user, video, permission }
+}
+
+function normalizeReviewBody (body) {
+  const input = body && typeof body === 'object' ? body : {}
+  const allowed = new Set(['edited', 'approved', 'rejected'])
+  if (!allowed.has(input.status)) return { ok: false, error: 'invalid_status' }
+
+  const editorStart = input.editorStart === null || input.editorStart === undefined ? null : Number(input.editorStart)
+  const editorEnd = input.editorEnd === null || input.editorEnd === undefined ? null : Number(input.editorEnd)
+
+  if (editorStart !== null && (!Number.isFinite(editorStart) || editorStart < 0)) {
+    return { ok: false, error: 'invalid_editor_start' }
+  }
+  if (editorEnd !== null && (!Number.isFinite(editorEnd) || editorEnd <= 0)) {
+    return { ok: false, error: 'invalid_editor_end' }
+  }
+  if (editorStart !== null && editorEnd !== null && editorEnd <= editorStart) {
+    return { ok: false, error: 'invalid_editor_range' }
+  }
+
+  return { ok: true, status: input.status, editorStart, editorEnd }
 }
 
 async function loadFileConfig (peertubeHelpers) {
@@ -88,6 +185,33 @@ async function resolveBridgeConfig ({ settingsManager, peertubeHelpers }) {
   }
 }
 
+async function bridgeRequest ({ settingsManager, peertubeHelpers, method, route, json }) {
+  const config = await resolveBridgeConfig({ settingsManager, peertubeHelpers })
+  const headers = {}
+  if (config.bridgeToken) headers[TOKEN_HEADER] = config.bridgeToken
+  if (json !== undefined) headers['Content-Type'] = 'application/json'
+
+  const response = await fetch(`${config.bridgeUrl}${route}`, {
+    method,
+    headers,
+    body: json === undefined ? undefined : JSON.stringify(json),
+    signal: AbortSignal.timeout(5000)
+  })
+
+  let body = null
+  try {
+    body = await response.json()
+  } catch (_error) {
+    body = null
+  }
+
+  if (!response.ok && response.status >= 500) {
+    throw new Error(`Bridge returned ${response.status}`)
+  }
+
+  return { status: response.status, body }
+}
+
 async function getBridgeHealth ({ settingsManager, peertubeHelpers }) {
   const config = await resolveBridgeConfig({ settingsManager, peertubeHelpers })
 
@@ -113,5 +237,6 @@ async function getBridgeHealth ({ settingsManager, peertubeHelpers }) {
 
 module.exports = {
   register,
-  unregister
+  unregister,
+  normalizeReviewBody
 }
