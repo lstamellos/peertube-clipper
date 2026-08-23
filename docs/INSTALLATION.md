@@ -21,7 +21,7 @@ Requirements:
 - Docker Compose v2;
 - a working PeerTube installation if the plugin is to be installed in the same run.
 
-The installer stages a self-contained stack under a state directory, generates a random service credential, builds the Clip Bridge and starts it. The default bind is `127.0.0.1:18100`.
+The installer stages a self-contained stack under a state directory, creates a random service credential on first installation, builds the Clip Bridge and starts it. The default bind is `127.0.0.1:18100`.
 
 Example for a native PeerTube installation:
 
@@ -87,6 +87,22 @@ sudo PEERTUBE_CLIPPER_SERVICE_TOKEN='replace-me' \
 
 For automation, prefer `--bridge-token-file PATH` instead of placing a credential directly in shell history.
 
+## Idempotent reruns and credential rotation
+
+Container and native installer reruns reuse the existing Bridge service credential by default. This keeps upgrades and `--skip-plugin` Bridge-only maintenance from silently desynchronizing the Bridge and PeerTube plugin configuration.
+
+Rotate the credential only deliberately:
+
+```sh
+sudo ./scripts/install.sh \
+  --rotate-token \
+  --mode container \
+  --peertube-deployment native \
+  --peertube-root /var/www/peertube/peertube-latest
+```
+
+When rotation is requested in a normal combined installation, the installer writes the new credential to both sides before completion. Do not use `--rotate-token` together with `--skip-plugin` unless the plugin configuration will be updated separately.
+
 ## Native PeerTube plugin installation
 
 PeerTube Clipper uses PeerTube's supported local plugin installer:
@@ -94,6 +110,8 @@ PeerTube Clipper uses PeerTube's supported local plugin installer:
 ```text
 npm run plugin:install -- --plugin-path ...
 ```
+
+The local staging directory passed to PeerTube always has the exact basename `peertube-plugin-clipper`, because PeerTube derives local plugin identity from that basename.
 
 The general installer auto-detects the PeerTube service user from the application tree when possible. For non-standard layouts, provide:
 
@@ -124,6 +142,30 @@ The installer copies the local plugin package into the running PeerTube containe
 Important: `127.0.0.1` inside the PeerTube container is **not** the Docker host. When PeerTube itself is containerized and the Bridge is outside that same container, `--bridge-url` must name an address reachable from the PeerTube container. Keep that address on a private network and firewall it appropriately.
 
 The official PeerTube image normally uses `/app` as the application root and `/data/plugins` for plugin data; both can be overridden with installer flags.
+
+## Validation
+
+Read-only installation validation:
+
+```sh
+sudo ./scripts/validate-installation.sh \
+  --peertube-root /var/www/peertube/peertube-latest \
+  --peertube-storage /var/www/peertube/storage \
+  --peertube-url https://video.example.org \
+  --show-identifiers
+```
+
+A separate `scripts/validate-review-e2e.sh` validator performs a controlled shared-review authorization test. It requires an existing source video with a channel owner, an accepted channel collaborator/editor and an unrelated ordinary user. The validator:
+
+- refuses to run if that source already has a Clipper workflow;
+- creates short-lived OAuth sessions without changing passwords or existing sessions;
+- seeds three temporary Bridge candidates;
+- verifies owner access, editor access to the same shared state and `403` for the unrelated user;
+- exercises edit, approve and reject actions and verifies audit actor IDs;
+- revokes all temporary sessions through PeerTube's normal revoke API;
+- deletes the temporary Bridge workflow and verifies that it is gone.
+
+Token and service credential values are never printed. This validator intentionally writes temporary test state, so it should only be run by an administrator who understands the selected accounts/source video.
 
 ## Dry run
 
