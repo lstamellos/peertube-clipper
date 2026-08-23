@@ -109,7 +109,8 @@ async function inspectPeerTubeReadiness ({ videoUuid, peertubeHelpers, fetchImpl
     captionLanguage: canonical.caption.language,
     captionChecksum,
     captionBytes: bytes.length,
-    captionAutomaticallyGenerated: canonical.caption.automaticallyGenerated
+    captionAutomaticallyGenerated: canonical.caption.automaticallyGenerated,
+    captionContent: bytes
   }
 }
 
