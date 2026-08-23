@@ -93,7 +93,8 @@ test('waits while transcription is pending', async () => {
   assert.equal(readiness.workflowStatus, 'waiting_for_transcript')
 })
 
-test('returns a stable SHA-256 checksum for the canonical VTT', async () => {
+test('returns checksum and exact canonical VTT bytes', async () => {
+  const canonical = 'WEBVTT\n\n00:00.000 --> 00:01.000\nHello\n'
   const readiness = await inspectPeerTubeReadiness({
     videoUuid: '00000000-0000-4000-8000-000000000003',
     peertubeHelpers: helpersWithRows([
@@ -109,7 +110,7 @@ test('returns a stable SHA-256 checksum for the canonical VTT', async () => {
         captionAutomaticallyGenerated: true
       }
     ]),
-    fetchImpl: vttFetch()
+    fetchImpl: vttFetch(canonical)
   })
 
   assert.equal(readiness.ready, true)
@@ -118,4 +119,7 @@ test('returns a stable SHA-256 checksum for the canonical VTT', async () => {
   assert.equal(readiness.captionLanguage, 'el')
   assert.match(readiness.captionChecksum, /^[0-9a-f]{64}$/)
   assert.equal(readiness.captionAutomaticallyGenerated, true)
+  assert.equal(Buffer.isBuffer(readiness.captionContent), true)
+  assert.equal(readiness.captionContent.toString('utf8'), canonical)
+  assert.equal(readiness.captionBytes, Buffer.byteLength(canonical))
 })
