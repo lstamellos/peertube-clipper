@@ -48,3 +48,14 @@ def test_candidate_transitions_update_shared_video_state(tmp_path):
 
     assert reviewed["acted_by_user_id"] == 42
     assert store.get_video(VIDEO)["status"] == "reviewed"
+
+
+def test_delete_video_cascades_candidate_state(tmp_path):
+    store = Storage(str(tmp_path / "state.sqlite3"))
+    store.create_candidate(VIDEO, candidate())
+
+    assert len(store.list_candidates(VIDEO)) == 1
+    assert store.delete_video(VIDEO) is True
+    assert store.get_video(VIDEO) is None
+    assert store.list_candidates(VIDEO) == []
+    assert store.delete_video(VIDEO) is False
