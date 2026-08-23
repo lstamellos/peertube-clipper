@@ -3,7 +3,8 @@
 # Stable native PeerTube plugin installer.
 # Keeps the local file: dependency source at a persistent path so pnpm can
 # resolve it on future upgrades. Also repairs legacy ephemeral /tmp staging
-# references created by older PeerTube Clipper installer versions.
+# references created by older PeerTube Clipper installer versions, including
+# references that survive only in pnpm-lock.yaml.
 #
 # No persistent strict-mode shell options are enabled.
 
@@ -26,7 +27,7 @@ die()  { printf '[peertube-clipper] ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'USAGE'
-Usage: ./scripts/install-plugin-native-stable.sh [options]
+Usage: bash ./scripts/install-plugin-native-stable.sh [options]
 
 Required:
   --peertube-root PATH
@@ -65,10 +66,10 @@ command -v runuser >/dev/null 2>&1 || die "runuser is required"
 
 PLUGINS_DIR="$PT_STORAGE/plugins"
 PACKAGE_JSON="$PLUGINS_DIR/package.json"
+PNPM_LOCK="$PLUGINS_DIR/pnpm-lock.yaml"
 STABLE_PARENT="$PLUGINS_DIR/.peertube-clipper-source"
 STABLE_STAGE="$STABLE_PARENT/$PLUGIN_NAME"
-LEGACY_STAGE=""
-LEGACY_PARENT=""
+LEGACY_LIST=""
 
 stage_tree() {
   local source="$1" destination="$2"
@@ -80,26 +81,27 @@ stage_tree() {
   chown -R "$PT_USER:$PT_USER" "$destination" || return 1
 }
 
-legacy_dependency() {
-  [ -f "$PACKAGE_JSON" ] || return 0
+find_legacy_stages() {
+  python3 - "$PACKAGE_JSON" "$PNPM_LOCK" <<'PY'
+import pathlib
+import re
+import sys
 
-  node - "$PACKAGE_JSON" "$PLUGIN_NAME" <<'NODE'
-const fs = require('fs')
-const [file, name] = process.argv.slice(2)
-let pkg
-try {
-  pkg = JSON.parse(fs.readFileSync(file, 'utf8'))
-} catch (_) {
-  process.exit(0)
-}
-for (const key of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-  const value = pkg?.[key]?.[name]
-  if (typeof value === 'string') {
-    process.stdout.write(value)
-    process.exit(0)
-  }
-}
-NODE
+pattern = re.compile(r"/tmp/peertube-clipper-stage\.[A-Za-z0-9_-]+/peertube-plugin-clipper")
+seen = set()
+
+for name in sys.argv[1:]:
+    path = pathlib.Path(name)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+
+    for match in pattern.findall(text):
+        if match not in seen:
+            seen.add(match)
+            print(match)
+PY
 }
 
 verify_persistent_dependency() {
@@ -129,10 +131,34 @@ process.exit(resolved === path.resolve(stable) ? 0 : 1)
 NODE
 }
 
+verify_no_legacy_reference() {
+  local found
+  found="$(find_legacy_stages 2>/dev/null || true)"
+  [ -z "$found" ]
+}
+
+cleanup_legacy_stages() {
+  local legacy parent
+  [ -n "$LEGACY_LIST" ] || return 0
+
+  while IFS= read -r legacy; do
+    [ -n "$legacy" ] || continue
+    parent="$(dirname "$legacy")"
+    case "$parent" in
+      /tmp/peertube-clipper-stage.*)
+        rm -rf "$parent" 2>/dev/null || true
+        ;;
+    esac
+  done <<< "$LEGACY_LIST"
+}
+
 if [ "$DRY_RUN" -eq 1 ]; then
   say "DRY-RUN: persist plugin source at $STABLE_STAGE"
-  say "DRY-RUN: repair legacy ephemeral file dependency if present"
-  say "DRY-RUN: run PeerTube plugin installer as $PT_USER"
+  say "DRY-RUN: inspect package.json and pnpm-lock.yaml for legacy ephemeral dependencies"
+  say "DRY-RUN: recreate only referenced legacy staging paths temporarily"
+  say "DRY-RUN: run PeerTube plugin installer as $PT_USER from persistent source"
+  say "DRY-RUN: verify package.json migrated to persistent file dependency"
+  say "DRY-RUN: verify no legacy ephemeral reference remains"
   [ "$NO_RESTART" -eq 1 ] || say "DRY-RUN: restart PeerTube"
   exit 0
 fi
@@ -143,30 +169,26 @@ chown "$PT_USER:$PT_USER" "$STABLE_PARENT" || die "Cannot set persistent staging
 stage_tree "$PLUGIN_SOURCE" "$STABLE_STAGE" || die "Cannot stage persistent plugin source"
 [ "$(basename "$STABLE_STAGE")" = "$PLUGIN_NAME" ] || die "Invalid persistent plugin staging basename"
 
-CURRENT_DEP="$(legacy_dependency 2>/dev/null || true)"
-case "$CURRENT_DEP" in
-  file:/tmp/peertube-clipper-stage.*/"$PLUGIN_NAME")
-    LEGACY_STAGE="${CURRENT_DEP#file:}"
-    LEGACY_PARENT="$(dirname "$LEGACY_STAGE")"
+LEGACY_LIST="$(find_legacy_stages 2>/dev/null || true)"
+if [ -n "$LEGACY_LIST" ]; then
+  say "Repairing legacy ephemeral PeerTube plugin dependency metadata for one upgrade"
 
-    case "$LEGACY_PARENT" in
+  while IFS= read -r legacy; do
+    [ -n "$legacy" ] || continue
+    parent="$(dirname "$legacy")"
+
+    case "$parent" in
       /tmp/peertube-clipper-stage.*) ;;
-      *) die "Refusing unexpected legacy plugin dependency path" ;;
+      *) cleanup_legacy_stages; die "Refusing unexpected legacy plugin dependency path" ;;
     esac
 
-    say "Repairing legacy ephemeral PeerTube plugin dependency for one upgrade"
-    mkdir -p "$LEGACY_STAGE" || die "Cannot recreate legacy plugin staging path"
-    stage_tree "$PLUGIN_SOURCE" "$LEGACY_STAGE" || die "Cannot populate legacy plugin staging path"
-    chmod 755 "$LEGACY_PARENT" "$LEGACY_STAGE" || die "Cannot make legacy staging path traversable"
-    ;;
-  file:*)
-    ;;
-  '')
-    ;;
-  *)
-    warn "Existing $PLUGIN_NAME dependency is not a local file dependency; PeerTube will replace it with the persistent local source"
-    ;;
-esac
+    mkdir -p "$legacy" || { cleanup_legacy_stages; die "Cannot recreate legacy plugin staging path"; }
+    stage_tree "$PLUGIN_SOURCE" "$legacy" || { cleanup_legacy_stages; die "Cannot populate legacy plugin staging path"; }
+    chmod 755 "$parent" "$legacy" || { cleanup_legacy_stages; die "Cannot make legacy staging path traversable"; }
+  done <<< "$LEGACY_LIST"
+else
+  say "No legacy ephemeral PeerTube plugin dependency metadata detected"
+fi
 
 if ! (
   cd "$PT_ROOT" &&
@@ -174,13 +196,14 @@ if ! (
     env NODE_CONFIG_DIR="$PT_CONFIG" NODE_ENV=production \
     npm run plugin:install -- --plugin-path "$STABLE_STAGE"
 ); then
-  [ -z "$LEGACY_PARENT" ] || rm -rf "$LEGACY_PARENT" 2>/dev/null || true
+  cleanup_legacy_stages
   die "PeerTube plugin installation failed"
 fi
 
-[ -z "$LEGACY_PARENT" ] || rm -rf "$LEGACY_PARENT" 2>/dev/null || true
+cleanup_legacy_stages
 
 verify_persistent_dependency || die "PeerTube plugin dependency did not migrate to the persistent staging path"
+verify_no_legacy_reference || die "Legacy ephemeral plugin dependency remains after installation"
 [ -d "$STABLE_STAGE" ] || die "Persistent plugin source disappeared after installation"
 
 say "PeerTube plugin installed from persistent source: $STABLE_STAGE"
