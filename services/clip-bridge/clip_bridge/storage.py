@@ -105,6 +105,20 @@ class Storage:
             ).fetchone()
             return dict(row)
 
+    def list_videos(self, statuses: list[str] | None = None) -> list[dict]:
+        with self.connect() as db:
+            if statuses:
+                placeholders = ", ".join("?" for _ in statuses)
+                rows = db.execute(
+                    f"SELECT * FROM videos WHERE status IN ({placeholders}) ORDER BY updated_at, video_uuid",
+                    tuple(statuses),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT * FROM videos ORDER BY updated_at, video_uuid"
+                ).fetchall()
+            return [dict(row) for row in rows]
+
     def get_video(self, video_uuid: UUID) -> dict | None:
         with self.connect() as db:
             row = db.execute(
