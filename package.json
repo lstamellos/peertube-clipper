@@ -9,6 +9,6 @@
   "scripts": {
     "check": "npm run check:plugin && npm run check:shell",
     "check:plugin": "node --check packages/peertube-plugin-clipper/main.js && node --check packages/peertube-plugin-clipper/permission.js && node --check packages/peertube-plugin-clipper/client-scripts/common.js && node --check packages/peertube-plugin-clipper/client-scripts/video-edit.js && node --test packages/peertube-plugin-clipper/test/*.test.js",
-    "check:shell": "bash -n scripts/install.sh scripts/uninstall.sh"
+    "check:shell": "bash -n scripts/install.sh scripts/uninstall.sh scripts/validate-installation.sh"
   }
 }
