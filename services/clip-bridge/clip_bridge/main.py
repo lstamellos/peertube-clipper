@@ -2,7 +2,7 @@ import hmac
 import os
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 
 from .models import (
     AnalysisRunClaim,
@@ -121,7 +121,7 @@ def review_candidate(
     try:
         result = storage.review_candidate(video_uuid, candidate_id, review)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     if not result:
         raise HTTPException(status_code=404, detail="candidate not found")
@@ -146,6 +146,66 @@ def claim_analysis_run(video_uuid: UUID, claim: AnalysisRunClaim) -> dict:
     return {"created": created, "analysis_run": run}
 
 
+@app.put(
+    "/v1/videos/{video_uuid}/analysis-runs/{analysis_run_id}/caption",
+    dependencies=[Depends(require_service_token)],
+)
+async def attach_caption_snapshot(
+    video_uuid: UUID,
+    analysis_run_id: str,
+    request: Request,
+) -> dict:
+    try:
+        return storage.attach_caption_snapshot(
+            video_uuid,
+            analysis_run_id,
+            await request.body(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get(
+    "/v1/videos/{video_uuid}/analysis-runs/{analysis_run_id}/caption",
+    dependencies=[Depends(require_service_token)],
+)
+def get_caption_snapshot(video_uuid: UUID, analysis_run_id: str) -> Response:
+    caption = storage.get_caption_snapshot(video_uuid, analysis_run_id)
+    if caption is None:
+        raise HTTPException(status_code=404, detail="caption snapshot not found")
+    return Response(content=caption, media_type="text/vtt; charset=utf-8")
+
+
+@app.post(
+    "/v1/analysis-runs/claim-next",
+    dependencies=[Depends(require_service_token)],
+)
+def claim_next_analysis_run() -> Response | dict:
+    run = storage.claim_next_analysis_run()
+    if run is None:
+        return Response(status_code=204)
+    return run
+
+
+@app.post(
+    "/v1/videos/{video_uuid}/analysis-runs/{analysis_run_id}/candidates",
+    dependencies=[Depends(require_service_token)],
+)
+def create_analysis_candidate(
+    video_uuid: UUID,
+    analysis_run_id: str,
+    candidate: CandidateCreate,
+) -> dict:
+    try:
+        return storage.create_analysis_candidate(
+            video_uuid,
+            analysis_run_id,
+            candidate,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.patch(
     "/v1/videos/{video_uuid}/analysis-runs/{analysis_run_id}",
     dependencies=[Depends(require_service_token)],
@@ -155,7 +215,10 @@ def update_analysis_run(
     analysis_run_id: str,
     update: AnalysisRunUpdate,
 ) -> dict:
-    run = storage.update_analysis_run(video_uuid, analysis_run_id, update)
+    try:
+        run = storage.update_analysis_run(video_uuid, analysis_run_id, update)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not run:
         raise HTTPException(status_code=404, detail="analysis run not found")
     return run
