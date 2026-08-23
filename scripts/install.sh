@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 
 # PeerTube Clipper general installer.
-# Intentionally avoids persistent shell strict-mode options so it is safe to
-# invoke from interactive administration sessions.
+# No persistent strict-mode shell options are enabled, so this script is safe
+# to invoke from an interactive administration shell.
 
 umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLUGIN="$ROOT/packages/peertube-plugin-clipper"
 PLUGIN_NAME="peertube-plugin-clipper"
+
 MODE="container"
 PT_MODE="auto"
 PT_ROOT=""
@@ -19,6 +20,7 @@ PT_COMPOSE=""
 PT_SERVICE="peertube"
 PT_CONTAINER_ROOT="/app"
 PT_PLUGIN_DATA=""
+
 BRIDGE_BIND="127.0.0.1"
 BRIDGE_PORT="18100"
 BRIDGE_URL=""
@@ -26,16 +28,29 @@ TOKEN_FILE=""
 STATE_DIR=""
 WITH_ANALYSIS=0
 MODEL="qwen3:1.7b"
+
 DRY_RUN=0
 NO_RESTART=0
 SKIP_PLUGIN=0
 TOKEN=""
 
-say() { printf '[peertube-clipper] %s\n' "$*"; }
+say()  { printf '[peertube-clipper] %s\n' "$*"; }
 warn() { printf '[peertube-clipper] WARNING: %s\n' "$*" >&2; }
-die() { printf '[peertube-clipper] ERROR: %s\n' "$*" >&2; exit 1; }
-run() { if [ "$DRY_RUN" -eq 1 ]; then printf '[peertube-clipper] DRY-RUN:'; printf ' %q' "$@"; printf '\n'; else "$@"; fi; }
-need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
+die()  { printf '[peertube-clipper] ERROR: %s\n' "$*" >&2; exit 1; }
+
+run() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[peertube-clipper] DRY-RUN:'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
 
 usage() {
   cat <<'USAGE'
@@ -67,17 +82,6 @@ PeerTube:
 Other:
   --dry-run
   -h, --help
-
-Examples:
-  sudo ./scripts/install.sh --mode container --peertube-deployment native \
-    --peertube-root /var/www/peertube/peertube-latest
-
-  sudo ./scripts/install.sh --mode native --peertube-deployment native \
-    --peertube-root /var/www/peertube/peertube-latest
-
-  sudo ./scripts/install.sh --mode external --bridge-url http://10.0.0.20:18100 \
-    --bridge-token-file /secure/clipper-token --peertube-deployment native \
-    --peertube-root /var/www/peertube/peertube-latest
 USAGE
 }
 
@@ -143,35 +147,41 @@ private_file() {
     say "DRY-RUN: write private file $file"
     return 0
   fi
-
   mkdir -p "$(dirname "$file")" || return 1
   printf '%s\n' "$text" > "$file" || return 1
   chmod 600 "$file" || return 1
 }
 
-normalize_build_context() {
+normalize_public_tree() {
   local dir="$1"
   [ "$DRY_RUN" -eq 1 ] && return 0
-
-  # The installer itself intentionally uses umask 077. Git checkouts and
-  # cp -a staging can therefore leave source files at 0600. Docker COPY keeps
-  # those modes, which can make them unreadable after the image switches to
-  # an unprivileged runtime user. Build inputs are public project source, so
-  # normalize only the staged build context, never secrets/state directories.
   chmod -R u+rwX,go+rX "$dir" || return 1
+}
+
+wait_bridge() {
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  local n=0
+  while [ "$n" -lt 30 ]; do
+    if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 "http://127.0.0.1:$BRIDGE_PORT/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
+    n=$((n + 1))
+    sleep 1
+  done
+  return 1
 }
 
 install_bridge_container() {
   need docker
   docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required"
 
-  [ -n "$STATE_DIR" ] || {
+  if [ -z "$STATE_DIR" ]; then
     if [ "$(id -u)" -eq 0 ]; then
       STATE_DIR=/var/lib/peertube-clipper
     else
       STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/peertube-clipper"
     fi
-  }
+  fi
 
   local stack="$STATE_DIR/stack" envfile="$STATE_DIR/bridge.env"
 
@@ -181,7 +191,7 @@ install_bridge_container() {
     mkdir -p "$stack/services" || die "Cannot create $stack"
     rm -rf "$stack/services/clip-bridge"
     cp -a "$ROOT/services/clip-bridge" "$stack/services/clip-bridge" || die "Cannot stage Bridge"
-    normalize_build_context "$stack/services/clip-bridge" || die "Cannot normalize Bridge build context permissions"
+    normalize_public_tree "$stack/services/clip-bridge" || die "Cannot normalize Bridge build context permissions"
     cp "$ROOT/compose.yaml" "$stack/compose.yaml" || die "Cannot stage compose file"
   fi
 
@@ -197,6 +207,8 @@ OLLAMA_MODEL=$MODEL" || die "Cannot write Bridge environment"
     run "${dc[@]}" --profile analysis up -d ollama || die "Ollama failed"
     run "${dc[@]}" exec -T ollama ollama pull "$MODEL" || die "Model pull failed"
   fi
+
+  wait_bridge || die "Bridge health check failed"
 }
 
 install_bridge_native() {
@@ -204,10 +216,7 @@ install_bridge_native() {
   need python3
   need systemctl
 
-  local user=peertube-clipper
-  local app=/opt/peertube-clipper
-  local data=/var/lib/peertube-clipper
-  local cfg=/etc/peertube-clipper
+  local user=peertube-clipper app=/opt/peertube-clipper data=/var/lib/peertube-clipper cfg=/etc/peertube-clipper
   local unit=/etc/systemd/system/peertube-clipper-bridge.service
 
   id "$user" >/dev/null 2>&1 || run useradd --system --home "$data" --shell /usr/sbin/nologin "$user" || die "Cannot create service user"
@@ -219,11 +228,11 @@ install_bridge_native() {
   else
     rm -rf "$app/bridge"
     cp -a "$ROOT/services/clip-bridge" "$app/bridge" || die "Cannot stage Bridge"
+    normalize_public_tree "$app/bridge" || die "Cannot normalize Bridge source permissions"
   fi
 
   run python3 -m venv "$app/venv" || die "Cannot create Python venv"
   run "$app/venv/bin/pip" install --disable-pip-version-check --no-cache-dir "$app/bridge" || die "Cannot install Bridge"
-
   private_file "$cfg/bridge.env" "PEERTUBE_CLIPPER_SERVICE_TOKEN=$TOKEN
 PEERTUBE_CLIPPER_DATABASE=$data/peertube-clipper.sqlite3" || die "Cannot write Bridge config"
 
@@ -258,131 +267,105 @@ UNIT
   run systemctl daemon-reload || die "systemd reload failed"
   run systemctl enable --now peertube-clipper-bridge.service || die "Bridge service failed"
   [ "$WITH_ANALYSIS" -eq 0 ] || warn "Native mode does not install Ollama; configure the analyzer separately"
+  wait_bridge || die "Bridge health check failed"
 }
 
 prepare_bridge() {
   if [ "$MODE" = external ]; then
     [ -n "$BRIDGE_URL" ] || die "External mode requires --bridge-url"
-
     if [ -n "$TOKEN_FILE" ]; then
       [ -r "$TOKEN_FILE" ] || die "Cannot read token file"
       TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
     else
       TOKEN="${PEERTUBE_CLIPPER_SERVICE_TOKEN:-}"
     fi
-
     [ -n "$TOKEN" ] || die "External mode requires --bridge-token-file or PEERTUBE_CLIPPER_SERVICE_TOKEN"
-    return
+    return 0
   fi
 
   TOKEN="$(make_token)"
   [ -n "$TOKEN" ] || die "Token generation failed"
 
-  [ "$PT_MODE" != docker ] || [ -n "$BRIDGE_URL" ] || die "Dockerized PeerTube requires explicit --bridge-url reachable from its container"
-
-  if [ "$MODE" = container ]; then
-    install_bridge_container
-  else
-    install_bridge_native
+  if [ "$PT_MODE" = docker ] && [ -z "$BRIDGE_URL" ]; then
+    die "Dockerized PeerTube requires explicit --bridge-url reachable from its container"
   fi
+
+  case "$MODE" in
+    container) install_bridge_container ;;
+    native) install_bridge_native ;;
+  esac
 
   [ -n "$BRIDGE_URL" ] || BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
-
-  if [ "$DRY_RUN" -eq 0 ]; then
-    local n=0
-    while [ "$n" -lt 20 ]; do
-      if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 "http://127.0.0.1:$BRIDGE_PORT/healthz" >/dev/null 2>&1; then
-        break
-      fi
-      n=$((n + 1))
-      sleep 1
-    done
-    [ "$n" -lt 20 ] || die "Bridge health check failed"
-  fi
 }
 
 find_native_base() {
   local r b
   r="$(readlink -f "$PT_ROOT" 2>/dev/null || printf '%s' "$PT_ROOT")"
-
-  for b in \
-    "$(dirname "$r")" \
-    "$(dirname "$(dirname "$r")")" \
-    "$(dirname "$(dirname "$(dirname "$r")")")"
-  do
+  for b in "$(dirname "$r")" "$(dirname "$(dirname "$r")")" "$(dirname "$(dirname "$(dirname "$r")")")"; do
     if [ -d "$b/storage" ] || [ -d "$b/config" ]; then
       printf '%s' "$b"
-      return
+      return 0
     fi
   done
-
   dirname "$PT_ROOT"
 }
 
 write_native_plugin_config() {
   local file="$PT_PLUGIN_DATA/bridge.json"
-
-  case "$BRIDGE_URL$TOKEN" in
-    *$'\n'*|*$'\r'*|*'"'*|*'\\'*) die "Bridge URL/token contains unsupported characters" ;;
-  esac
-
+  case "$BRIDGE_URL$TOKEN" in *$'\n'*|*$'\r'*|*'"'*|*'\\'*) die "Bridge URL/token contains unsupported characters" ;; esac
   if [ "$DRY_RUN" -eq 1 ]; then
     say "DRY-RUN: write private plugin config $file"
-    return
+    return 0
   fi
-
   mkdir -p "$PT_PLUGIN_DATA" || die "Cannot create plugin data directory"
   printf '{"bridgeUrl":"%s","bridgeToken":"%s"}\n' "$BRIDGE_URL" "$TOKEN" > "$file" || die "Cannot write plugin config"
-  chmod 600 "$file"
+  chmod 600 "$file" || die "Cannot protect plugin config"
   chown -R "$PT_USER:$PT_USER" "$PT_PLUGIN_DATA" || die "Cannot set plugin data ownership"
 }
 
 install_plugin_native() {
   [ -d "$PT_ROOT" ] && [ -f "$PT_ROOT/package.json" ] || die "Invalid PeerTube root: $PT_ROOT"
 
-  local base stage
+  local base stage_parent stage
   base="$(find_native_base)"
-
   [ -n "$PT_CONFIG" ] || PT_CONFIG="$base/config"
   [ -d "$PT_CONFIG" ] || die "Pass --peertube-config-dir"
-
   [ -n "$PT_STORAGE" ] || PT_STORAGE="$base/storage"
   [ -d "$PT_STORAGE" ] || die "Pass --peertube-storage-dir"
-
   [ -n "$PT_USER" ] || PT_USER="$(stat -c '%U' "$PT_ROOT" 2>/dev/null || printf peertube)"
 
-  stage="$(mktemp -d /tmp/peertube-clipper-plugin.XXXXXX)" || die "Cannot create staging directory"
+  stage_parent="$(mktemp -d /tmp/peertube-clipper-stage.XXXXXX)" || die "Cannot create plugin staging parent"
+  stage="$stage_parent/$PLUGIN_NAME"
 
-  if [ "$DRY_RUN" -eq 0 ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    say "DRY-RUN: stage plugin at $stage"
+  else
+    mkdir -p "$stage" || die "Cannot create plugin staging directory"
     cp -a "$PLUGIN/." "$stage/" || die "Cannot stage plugin"
-    chmod -R a+rX "$stage" || die "Cannot normalize plugin staging permissions"
+    [ "$(basename "$stage")" = "$PLUGIN_NAME" ] || die "Invalid plugin staging basename"
+    normalize_public_tree "$stage" || die "Cannot normalize plugin staging permissions"
+    chmod 755 "$stage_parent" "$stage" || die "Cannot make plugin staging traversable"
   fi
 
   if [ "$DRY_RUN" -eq 1 ]; then
     say "DRY-RUN: install plugin as $PT_USER from $stage"
   else
-    (cd "$PT_ROOT" && runuser -u "$PT_USER" -- env NODE_CONFIG_DIR="$PT_CONFIG" NODE_ENV=production npm run plugin:install -- --plugin-path "$stage") || die "PeerTube plugin installation failed"
+    ( cd "$PT_ROOT" && runuser -u "$PT_USER" -- env NODE_CONFIG_DIR="$PT_CONFIG" NODE_ENV=production npm run plugin:install -- --plugin-path "$stage" ) || {
+      rm -rf "$stage_parent" 2>/dev/null || true
+      die "PeerTube plugin installation failed"
+    }
   fi
 
-  rm -rf "$stage" 2>/dev/null || true
-
+  rm -rf "$stage_parent" 2>/dev/null || true
   [ -n "$PT_PLUGIN_DATA" ] || PT_PLUGIN_DATA="$PT_STORAGE/plugins/data/$PLUGIN_NAME"
   write_native_plugin_config
 
   if [ "$NO_RESTART" -eq 0 ]; then
-    local unit=""
+    local unit="" u
     for u in peertube.service peertube; do
-      if systemctl list-unit-files "$u" --no-legend 2>/dev/null | grep -q .; then
-        unit="$u"
-        break
-      fi
+      if systemctl list-unit-files "$u" --no-legend 2>/dev/null | grep -q .; then unit="$u"; break; fi
     done
-
-    if [ -z "$unit" ]; then
-      warn "PeerTube service not detected; restart it manually"
-    else
-      run systemctl restart "$unit" || die "PeerTube restart failed"
-    fi
+    [ -z "$unit" ] && warn "PeerTube service not detected; restart it manually" || run systemctl restart "$unit" || die "PeerTube restart failed"
   fi
 }
 
@@ -390,46 +373,37 @@ install_plugin_docker() {
   need docker
   [ -n "$PT_COMPOSE" ] && [ -d "$PT_COMPOSE" ] || die "Docker mode requires --peertube-compose-dir"
 
-  local cid
+  local cid stage="/tmp/$PLUGIN_NAME"
   cid="$(cd "$PT_COMPOSE" && docker compose ps -q "$PT_SERVICE" 2>/dev/null)"
   [ -n "$cid" ] || die "PeerTube container not found"
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    say "DRY-RUN: copy and install plugin in container $cid"
+    say "DRY-RUN: copy and install plugin in container at $stage"
   else
-    docker exec -u 0 "$cid" rm -rf /tmp/peertube-plugin-clipper >/dev/null 2>&1 || true
-    docker exec -u 0 "$cid" mkdir -p /tmp/peertube-plugin-clipper || die "Cannot create plugin staging directory"
-    docker cp "$PLUGIN/." "$cid:/tmp/peertube-plugin-clipper" || die "Cannot copy plugin"
-    docker exec -u 0 "$cid" chmod -R a+rX /tmp/peertube-plugin-clipper || die "Cannot normalize plugin staging permissions"
-    docker exec -u peertube -w "$PT_CONTAINER_ROOT" "$cid" npm run plugin:install -- --plugin-path /tmp/peertube-plugin-clipper || die "Plugin install failed"
-    docker exec -u 0 "$cid" rm -rf /tmp/peertube-plugin-clipper >/dev/null 2>&1 || true
+    docker exec -u 0 "$cid" rm -rf "$stage" >/dev/null 2>&1 || true
+    docker exec -u 0 "$cid" mkdir -p "$stage" || die "Cannot create plugin staging directory"
+    docker cp "$PLUGIN/." "$cid:$stage" || die "Cannot copy plugin"
+    docker exec -u 0 "$cid" chmod -R a+rX "$stage" || die "Cannot normalize plugin permissions"
+    docker exec -u peertube -w "$PT_CONTAINER_ROOT" "$cid" npm run plugin:install -- --plugin-path "$stage" || die "Plugin install failed"
+    docker exec -u 0 "$cid" rm -rf "$stage" >/dev/null 2>&1 || true
   fi
 
   [ -n "$PT_PLUGIN_DATA" ] || PT_PLUGIN_DATA="/data/plugins/data/$PLUGIN_NAME"
-
-  case "$BRIDGE_URL$TOKEN" in
-    *$'\n'*|*$'\r'*|*'"'*|*'\\'*) die "Bridge URL/token contains unsupported characters" ;;
-  esac
+  case "$BRIDGE_URL$TOKEN" in *$'\n'*|*$'\r'*|*'"'*|*'\\'*) die "Bridge URL/token contains unsupported characters" ;; esac
 
   if [ "$DRY_RUN" -eq 1 ]; then
     say "DRY-RUN: write private plugin config in container"
   else
-    printf '{"bridgeUrl":"%s","bridgeToken":"%s"}\n' "$BRIDGE_URL" "$TOKEN" \
-      | docker exec -i -u peertube "$cid" sh -c "umask 077; mkdir -p '$PT_PLUGIN_DATA'; cat > '$PT_PLUGIN_DATA/bridge.json'; chmod 600 '$PT_PLUGIN_DATA/bridge.json'" \
-      || die "Cannot configure plugin"
+    printf '{"bridgeUrl":"%s","bridgeToken":"%s"}\n' "$BRIDGE_URL" "$TOKEN" | docker exec -i -u peertube "$cid" sh -c "umask 077; mkdir -p '$PT_PLUGIN_DATA'; cat > '$PT_PLUGIN_DATA/bridge.json'; chmod 600 '$PT_PLUGIN_DATA/bridge.json'" || die "Cannot configure plugin"
   fi
 
   if [ "$NO_RESTART" -eq 0 ]; then
-    (cd "$PT_COMPOSE" && run docker compose restart "$PT_SERVICE") || die "PeerTube restart failed"
+    ( cd "$PT_COMPOSE" && run docker compose restart "$PT_SERVICE" ) || die "PeerTube restart failed"
   fi
 }
 
 prepare_bridge
-
-case "$BRIDGE_URL" in
-  http://*|https://*) ;;
-  *) die "Bridge URL must start with http:// or https://" ;;
-esac
+case "$BRIDGE_URL" in http://*|https://*) ;; *) die "Bridge URL must start with http:// or https://" ;; esac
 
 if [ "$SKIP_PLUGIN" -eq 0 ]; then
   case "$PT_MODE" in
