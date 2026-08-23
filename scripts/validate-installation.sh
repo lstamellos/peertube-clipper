@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 
-# Read-only installation/permission preflight for PeerTube Clipper.
+# Read-only installation/permission validation for PeerTube Clipper.
 # It never prints database credentials or Bridge service tokens.
 
 umask 077
 
 PEERTUBE_ROOT=""
 PEERTUBE_STORAGE=""
+PEERTUBE_URL=""
 BRIDGE_URL="http://127.0.0.1:18100"
 REPORT=""
 SHOW_IDENTIFIERS=0
@@ -14,7 +15,9 @@ DB_NAME=""
 
 say() {
   printf '%s\n' "$*"
-  if [ -n "$REPORT" ]; then printf '%s\n' "$*" >> "$REPORT"; fi
+  if [ -n "$REPORT" ]; then
+    printf '%s\n' "$*" >> "$REPORT"
+  fi
 }
 
 die() {
@@ -24,11 +27,12 @@ die() {
 }
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage: ./scripts/validate-installation.sh [options]
 
   --peertube-root PATH       Active PeerTube application tree
   --peertube-storage PATH    PeerTube storage directory (auto-detected when possible)
+  --peertube-url URL         Optional public PeerTube URL; enables plugin-route registration probe
   --bridge-url URL           Default: http://127.0.0.1:18100
   --database NAME            PeerTube PostgreSQL database (auto-detected when possible)
   --report PATH              Optional private text report
@@ -36,17 +40,18 @@ Usage: ./scripts/validate-installation.sh [options]
   -h, --help
 
 The script is read-only. It checks Bridge health, plugin installation/configuration,
-and (when local PostgreSQL superuser access is available) locates a local source
-video whose channel has an accepted collaborator/editor. No credentials or tokens
-are printed.
-EOF
-}
+and, when a PeerTube URL is supplied, waits for the plugin server route to become
+registered. When local PostgreSQL superuser access is available it also locates a
+local source video whose channel has an accepted collaborator/editor. No credentials
+or service tokens are printed.
+USAGE
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --peertube-root) PEERTUBE_ROOT="$2"; shift 2 ;;
     --peertube-storage) PEERTUBE_STORAGE="$2"; shift 2 ;;
+    --peertube-url) PEERTUBE_URL="$2"; shift 2 ;;
     --bridge-url) BRIDGE_URL="$2"; shift 2 ;;
     --database) DB_NAME="$2"; shift 2 ;;
     --report) REPORT="$2"; shift 2 ;;
@@ -90,28 +95,33 @@ if [ -z "$PEERTUBE_STORAGE" ]; then
 fi
 
 if [ -n "$PEERTUBE_STORAGE" ] && [ -d "$PEERTUBE_STORAGE" ]; then
+  STORAGE_OK=1
   say "peertube_storage_detected=yes"
 else
+  STORAGE_OK=0
   say "peertube_storage_detected=no"
 fi
 
+BRIDGE_OK=0
 if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 3 "$BRIDGE_URL/healthz" >/dev/null 2>&1; then
+  BRIDGE_OK=1
   say "bridge_health=PASS"
 else
   say "bridge_health=FAIL"
 fi
 
 PLUGIN_DIR=""
-if [ -n "$PEERTUBE_STORAGE" ]; then
-  for candidate in \
-    "$PEERTUBE_STORAGE/plugins/node_modules/peertube-plugin-clipper" \
-    "$PEERTUBE_STORAGE/plugins/node_modules/peertube-plugin-clipper/"
-  do
-    if [ -d "$candidate" ]; then PLUGIN_DIR="$candidate"; break; fi
-  done
+PLUGIN_VERSION=""
+PLUGIN_OK=0
+if [ "$STORAGE_OK" -eq 1 ]; then
+  candidate="$PEERTUBE_STORAGE/plugins/node_modules/peertube-plugin-clipper"
+  if [ -d "$candidate" ]; then
+    PLUGIN_DIR="$candidate"
+  fi
 fi
 
 if [ -n "$PLUGIN_DIR" ]; then
+  PLUGIN_OK=1
   say "plugin_installed=PASS"
   if [ -f "$PLUGIN_DIR/package.json" ]; then
     PLUGIN_VERSION="$(node -e 'try { console.log(require(process.argv[1]).version || "unknown") } catch (_) { console.log("unknown") }' "$PLUGIN_DIR/package.json" 2>/dev/null)"
@@ -122,14 +132,18 @@ else
 fi
 
 CONFIG_FILE=""
-if [ -n "$PEERTUBE_STORAGE" ]; then
+CONFIG_OK=0
+if [ "$STORAGE_OK" -eq 1 ]; then
   CONFIG_FILE="$PEERTUBE_STORAGE/plugins/data/peertube-plugin-clipper/bridge.json"
 fi
 
 if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
-  say "plugin_private_config=PASS"
   MODE="$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || true)"
+  say "plugin_private_config=PASS"
   say "plugin_private_config_mode=${MODE:-unknown}"
+  if [ "$MODE" = "600" ]; then
+    CONFIG_OK=1
+  fi
 else
   say "plugin_private_config=FAIL"
 fi
@@ -142,6 +156,40 @@ for unit in peertube.service peertube; do
   fi
 done
 say "peertube_service_state=${SERVICE_STATE:-unknown}"
+
+ROUTE_OK=1
+if [ -n "$PEERTUBE_URL" ]; then
+  ROUTE_OK=0
+  if [ -z "$PLUGIN_VERSION" ] || [ "$PLUGIN_VERSION" = "unknown" ]; then
+    say "plugin_router_registration=FAIL"
+    say "plugin_router_reason=plugin_version_unavailable"
+  elif ! command -v curl >/dev/null 2>&1; then
+    say "plugin_router_registration=FAIL"
+    say "plugin_router_reason=curl_unavailable"
+  else
+    ROUTE_URL="${PEERTUBE_URL%/}/plugins/clipper/${PLUGIN_VERSION}/router/health"
+    ROUTE_CODE=""
+    attempt=0
+    while [ "$attempt" -lt 30 ]; do
+      ROUTE_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 "$ROUTE_URL" 2>/dev/null || true)"
+      if [ "$ROUTE_CODE" = "401" ]; then
+        ROUTE_OK=1
+        break
+      fi
+      attempt=$((attempt + 1))
+      sleep 1
+    done
+    say "plugin_router_unauthenticated_http=${ROUTE_CODE:-none}"
+    if [ "$ROUTE_OK" -eq 1 ]; then
+      say "plugin_router_registration=PASS"
+    else
+      say "plugin_router_registration=FAIL"
+    fi
+  fi
+else
+  say "plugin_router_registration=SKIP"
+  say "plugin_router_reason=peertube_url_not_supplied"
+fi
 
 psql_postgres() {
   if [ "$(id -u)" -eq 0 ] && command -v runuser >/dev/null 2>&1; then
@@ -165,8 +213,11 @@ else
     DBS="$(psql_postgres -Atqc 'SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname' 2>/dev/null || true)"
     while IFS= read -r candidate; do
       [ -n "$candidate" ] || continue
-      MATCH="$(psql_postgres -d "$candidate" -Atqc 'SELECT CASE WHEN to_regclass('"'"'"videoChannelCollaborator"'"'"') IS NOT NULL AND to_regclass('"'"'video'"'"') IS NOT NULL THEN 1 ELSE 0 END' 2>/dev/null || true)"
-      if [ "$MATCH" = "1" ]; then DB_NAME="$candidate"; break; fi
+      MATCH="$(psql_postgres -d "$candidate" -Atqc "SELECT CASE WHEN to_regclass('\"videoChannelCollaborator\"') IS NOT NULL AND to_regclass('video') IS NOT NULL THEN 1 ELSE 0 END" 2>/dev/null || true)"
+      if [ "$MATCH" = "1" ]; then
+        DB_NAME="$candidate"
+        break
+      fi
     done <<< "$DBS"
   fi
 
@@ -241,7 +292,11 @@ else
   fi
 fi
 
-if [ -n "$PLUGIN_DIR" ] && command -v curl >/dev/null 2>&1 && curl -fsS --max-time 3 "$BRIDGE_URL/healthz" >/dev/null 2>&1; then
+if [ "$BRIDGE_OK" -eq 1 ] \
+  && [ "$PLUGIN_OK" -eq 1 ] \
+  && [ "$CONFIG_OK" -eq 1 ] \
+  && [ "$ROUTE_OK" -eq 1 ]
+then
   say "VALIDATION_RESULT=PASS"
 else
   say "VALIDATION_RESULT=FAIL"
