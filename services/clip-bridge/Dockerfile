@@ -8,13 +8,19 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY clip_bridge ./clip_bridge
 
-RUN pip install --no-cache-dir .
+# Install a wheel into site-packages, then remove the build-source copy.
+# This prevents restrictive checkout/build-context modes (for example from
+# umask 077) from shadowing the installed package when the runtime switches
+# to the unprivileged clipper user.
+RUN pip install --no-cache-dir . \
+    && rm -rf /app/clip_bridge /app/pyproject.toml
 
 RUN useradd --system --uid 10001 --create-home clipper \
     && mkdir -p /data \
     && chown -R clipper:clipper /data
 
 USER clipper
+WORKDIR /data
 
 ENV PEERTUBE_CLIPPER_DATABASE=/data/peertube-clipper.sqlite3
 
