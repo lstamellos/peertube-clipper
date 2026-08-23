@@ -79,7 +79,10 @@ def test_worker_uses_snapshot_and_writes_canonical_candidate() -> None:
     assert bridge.finished == ("complete", None)
     assert bridge.active_checks >= 3
     assert len(bridge.candidates) == 1
-    assert bridge.candidates[0].canonical_transcript == "Intro Important statement Supporting detail"
+    written = bridge.candidates[0]
+    assert written.canonical_transcript == "Intro Important statement Supporting detail"
+    assert written.category == "quote"
+    assert written.reason == "editorial anchor"
     assert locator.calls[0][0] == "qwen3:1.7b"
 
 
