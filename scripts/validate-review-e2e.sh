@@ -22,10 +22,15 @@ REPORT=""
 OWNER_TOKEN=""
 EDITOR_TOKEN=""
 UNRELATED_TOKEN=""
+OWNER_ID=""
+EDITOR_ID=""
+UNRELATED_ID=""
 BRIDGE_TOKEN=""
 WORKFLOW_CREATED=0
 CLEANUP_OK=1
 LAST_CANDIDATE=""
+LAST_SESSION_TOKEN=""
+LAST_SESSION_USER_ID=""
 
 say() {
   printf '%s\n' "$*"
@@ -205,11 +210,6 @@ if [ -z "$DB_NAME" ]; then
 fi
 [ -n "$DB_NAME" ] || die "peertube_database_not_detected"
 
-OWNER_ID="$(psql_postgres -d "$DB_NAME" -Atq -v username="$OWNER_USER" -c "SELECT id FROM \"user\" WHERE username = :'username' LIMIT 1" 2>/dev/null || true)"
-EDITOR_ID="$(psql_postgres -d "$DB_NAME" -Atq -v username="$EDITOR_USER" -c "SELECT id FROM \"user\" WHERE username = :'username' LIMIT 1" 2>/dev/null || true)"
-UNRELATED_ID="$(psql_postgres -d "$DB_NAME" -Atq -v username="$UNRELATED_USER" -c "SELECT id FROM \"user\" WHERE username = :'username' LIMIT 1" 2>/dev/null || true)"
-[ -n "$OWNER_ID" ] && [ -n "$EDITOR_ID" ] && [ -n "$UNRELATED_ID" ] || die "test_actor_lookup_failed"
-
 create_session() {
   local username="$1" access refresh inserted
   access="$(openssl rand -hex 32)" || return 1
@@ -233,16 +233,34 @@ SELECT
   'PeerTube Clipper E2E', '127.0.0.1', now(),
   now(), now(), selected_user.id, selected_client.id
 FROM selected_user CROSS JOIN selected_client
-RETURNING id;
+RETURNING "userId";
 SQL
 )"
   [ -n "$inserted" ] || return 1
-  printf '%s' "$access"
+  LAST_SESSION_TOKEN="$access"
+  LAST_SESSION_USER_ID="$inserted"
+  return 0
 }
 
-OWNER_TOKEN="$(create_session "$OWNER_USER")" || die "owner_test_session_failed"
-EDITOR_TOKEN="$(create_session "$EDITOR_USER")" || die "editor_test_session_failed"
-UNRELATED_TOKEN="$(create_session "$UNRELATED_USER")" || die "unrelated_test_session_failed"
+create_session "$OWNER_USER" || die "owner_test_session_failed"
+OWNER_TOKEN="$LAST_SESSION_TOKEN"
+OWNER_ID="$LAST_SESSION_USER_ID"
+LAST_SESSION_TOKEN=""
+LAST_SESSION_USER_ID=""
+
+create_session "$EDITOR_USER" || die "editor_test_session_failed"
+EDITOR_TOKEN="$LAST_SESSION_TOKEN"
+EDITOR_ID="$LAST_SESSION_USER_ID"
+LAST_SESSION_TOKEN=""
+LAST_SESSION_USER_ID=""
+
+create_session "$UNRELATED_USER" || die "unrelated_test_session_failed"
+UNRELATED_TOKEN="$LAST_SESSION_TOKEN"
+UNRELATED_ID="$LAST_SESSION_USER_ID"
+LAST_SESSION_TOKEN=""
+LAST_SESSION_USER_ID=""
+
+[ -n "$OWNER_ID" ] && [ -n "$EDITOR_ID" ] && [ -n "$UNRELATED_ID" ] || die "test_actor_ids_missing"
 say "temporary_sessions_created=PASS"
 
 seed_candidate() {
