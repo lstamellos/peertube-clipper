@@ -1,0 +1,42 @@
+{
+  "name": "peertube-plugin-clipper",
+  "version": "0.1.0-alpha.1",
+  "description": "Review-first clip discovery and rendering workflow for PeerTube",
+  "engine": {
+    "peertube": ">=8.2.0"
+  },
+  "keywords": [
+    "peertube",
+    "plugin",
+    "clips",
+    "video-editing",
+    "transcript",
+    "editorial-workflow"
+  ],
+  "homepage": "https://github.com/lstamellos/peertube-clipper",
+  "author": "Project contributors",
+  "bugs": "https://github.com/lstamellos/peertube-clipper/issues",
+  "license": "AGPL-3.0-only",
+  "library": "./main.js",
+  "files": [
+    "main.js",
+    "client-scripts",
+    "static"
+  ],
+  "staticDirs": {
+    "static": "static"
+  },
+  "css": [
+    "static/styles.css"
+  ],
+  "clientScripts": [
+    {
+      "script": "client-scripts/common.js",
+      "scopes": ["common"]
+    },
+    {
+      "script": "client-scripts/video-edit.js",
+      "scopes": ["video-edit"]
+    }
+  ]
+}

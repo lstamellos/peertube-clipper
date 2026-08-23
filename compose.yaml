@@ -1,0 +1,38 @@
+services:
+  clip-bridge:
+    build:
+      context: ./services/clip-bridge
+    restart: unless-stopped
+    init: true
+    environment:
+      PEERTUBE_CLIPPER_SERVICE_TOKEN: ${PEERTUBE_CLIPPER_SERVICE_TOKEN:?set PEERTUBE_CLIPPER_SERVICE_TOKEN}
+      PEERTUBE_CLIPPER_DATABASE: /data/peertube-clipper.sqlite3
+    volumes:
+      - clipper-data:/data
+    ports:
+      - "${PEERTUBE_CLIPPER_BIND:-127.0.0.1}:${PEERTUBE_CLIPPER_PORT:-18100}:18100"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18100/healthz', timeout=2).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["analysis"]
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    expose:
+      - "11434"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  clipper-data:
+  ollama-data:

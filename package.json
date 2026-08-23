@@ -1,0 +1,14 @@
+{
+  "name": "peertube-clipper-monorepo",
+  "private": true,
+  "version": "0.1.0-alpha.1",
+  "license": "AGPL-3.0-only",
+  "workspaces": [
+    "packages/peertube-plugin-clipper"
+  ],
+  "scripts": {
+    "check": "npm run check:plugin && npm run check:shell",
+    "check:plugin": "node --check packages/peertube-plugin-clipper/main.js && node --check packages/peertube-plugin-clipper/client-scripts/common.js && node --check packages/peertube-plugin-clipper/client-scripts/video-edit.js",
+    "check:shell": "bash -n scripts/install.sh scripts/uninstall.sh"
+  }
+}

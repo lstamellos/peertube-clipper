@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "peertube-clipper-bridge"
+version = "0.1.0a1"
+description = "Private state and orchestration service for PeerTube Clipper"
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-only" }
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "pydantic>=2.8,<3"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "httpx>=0.27,<1"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["clip_bridge*"]

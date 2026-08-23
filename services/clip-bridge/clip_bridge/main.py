@@ -1,0 +1,101 @@
+import hmac
+import os
+from uuid import UUID
+
+from fastapi import Depends, FastAPI, Header, HTTPException, status
+
+from .models import CandidateCreate, CandidateReview
+from .storage import Storage
+
+
+SERVICE_TOKEN = os.environ.get("PEERTUBE_CLIPPER_SERVICE_TOKEN", "")
+DATABASE = os.environ.get("PEERTUBE_CLIPPER_DATABASE", "./peertube-clipper.sqlite3")
+
+app = FastAPI(
+    title="PeerTube Clipper Bridge",
+    version="0.1.0-alpha.1",
+    docs_url=None,
+    redoc_url=None,
+)
+
+storage = Storage(DATABASE)
+
+
+def require_service_token(
+    x_peertube_clipper_token: str | None = Header(default=None),
+) -> None:
+    if not SERVICE_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="service token is not configured",
+        )
+
+    if not x_peertube_clipper_token or not hmac.compare_digest(
+        x_peertube_clipper_token,
+        SERVICE_TOKEN,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid service credential",
+        )
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    return {"ok": True, "service": "peertube-clipper-bridge"}
+
+
+@app.put("/v1/videos/{video_uuid}", dependencies=[Depends(require_service_token)])
+def ensure_video(video_uuid: UUID) -> dict:
+    return storage.ensure_video(video_uuid)
+
+
+@app.get("/v1/videos/{video_uuid}", dependencies=[Depends(require_service_token)])
+def get_video(video_uuid: UUID) -> dict:
+    state = storage.get_video(video_uuid)
+    if not state:
+        raise HTTPException(status_code=404, detail="video workflow not found")
+
+    return {
+        "video": state,
+        "candidates": storage.list_candidates(video_uuid),
+    }
+
+
+@app.get(
+    "/v1/videos/{video_uuid}/candidates",
+    dependencies=[Depends(require_service_token)],
+)
+def list_candidates(video_uuid: UUID) -> list[dict]:
+    return storage.list_candidates(video_uuid)
+
+
+@app.post(
+    "/v1/videos/{video_uuid}/candidates",
+    dependencies=[Depends(require_service_token)],
+)
+def create_candidate(video_uuid: UUID, candidate: CandidateCreate) -> dict:
+    try:
+        return storage.create_candidate(video_uuid, candidate)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.patch(
+    "/v1/videos/{video_uuid}/candidates/{candidate_id}",
+    dependencies=[Depends(require_service_token)],
+)
+def review_candidate(
+    video_uuid: UUID,
+    candidate_id: str,
+    review: CandidateReview,
+) -> dict:
+    try:
+        result = storage.review_candidate(video_uuid, candidate_id, review)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if not result:
+        raise HTTPException(status_code=404, detail="candidate not found")
+
+    return result

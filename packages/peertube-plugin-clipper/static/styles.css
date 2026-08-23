@@ -1,0 +1,14 @@
+.peertube-clipper-page,
+.peertube-clipper-entry {
+  max-width: 1100px;
+}
+
+.peertube-clipper-entry {
+  padding: 1rem;
+  border: 1px solid var(--input-border-color, #ccc);
+  border-radius: 0.5rem;
+}
+
+.peertube-clipper-muted {
+  opacity: 0.72;
+}
