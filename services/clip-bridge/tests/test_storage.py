@@ -1,4 +1,5 @@
 import hashlib
+import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,6 +26,8 @@ def candidate() -> CandidateCreate:
         suggested_start=5,
         suggested_end=30,
         canonical_transcript="Example canonical transcript.",
+        category="quote",
+        analysis_reason="Editorially useful statement.",
     )
 
 
@@ -34,10 +37,90 @@ def claim_worker(storage: Storage):
     return claimed
 
 
+def test_phase2b_schema_migrates_without_losing_queued_run(tmp_path: Path) -> None:
+    database = tmp_path / "phase2b.sqlite3"
+    video_uuid = str(uuid4())
+    run_id = str(uuid4())
+    now = "2026-08-23T03:39:17+00:00"
+
+    db = sqlite3.connect(database)
+    try:
+        db.executescript(
+            """
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE videos (
+                video_uuid TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE candidates (
+                candidate_id TEXT PRIMARY KEY,
+                video_uuid TEXT NOT NULL REFERENCES videos(video_uuid) ON DELETE CASCADE,
+                anchor_start REAL NOT NULL,
+                anchor_end REAL NOT NULL,
+                suggested_start REAL NOT NULL,
+                suggested_end REAL NOT NULL,
+                canonical_transcript TEXT NOT NULL,
+                status TEXT NOT NULL,
+                editor_start REAL,
+                editor_end REAL,
+                acted_by_user_id INTEGER,
+                acted_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE analysis_runs (
+                analysis_run_id TEXT PRIMARY KEY,
+                video_uuid TEXT NOT NULL REFERENCES videos(video_uuid) ON DELETE CASCADE,
+                caption_language TEXT NOT NULL,
+                caption_checksum TEXT NOT NULL,
+                analyzer_version TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(video_uuid, caption_checksum, analyzer_version)
+            );
+            """
+        )
+        db.execute(
+            "INSERT INTO videos VALUES (?, 'ready_for_analysis', ?, ?)",
+            (video_uuid, now, now),
+        )
+        db.execute(
+            """
+            INSERT INTO analysis_runs VALUES (?, ?, 'el', ?, 'locator-v1',
+                'qwen3:1.7b', 'anchors-v1', 'queued', NULL, ?, ?)
+            """,
+            (run_id, video_uuid, "a" * 64, now, now),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    storage = Storage(str(database))
+    runs = storage.list_analysis_runs(video_uuid)
+    assert len(runs) == 1
+    assert runs[0]["analysis_run_id"] == run_id
+    assert runs[0]["status"] == "queued"
+    assert runs[0]["caption_snapshot_ready"] is False
+
+    with storage.connect() as migrated:
+        run_columns = {row["name"] for row in migrated.execute('PRAGMA table_info("analysis_runs")')}
+        candidate_columns = {row["name"] for row in migrated.execute('PRAGMA table_info("candidates")')}
+    assert {"caption_vtt", "worker_lease_token", "worker_lease_expires_at"} <= run_columns
+    assert {"analysis_run_id", "category", "analysis_reason"} <= candidate_columns
+
+
 def test_shared_candidate_state_and_review(tmp_path: Path) -> None:
     storage = Storage(str(tmp_path / "clipper.sqlite3"))
     video_uuid = uuid4()
     created = storage.create_candidate(video_uuid, candidate())
+    assert created["category"] == "quote"
+    assert created["analysis_reason"] == "Editorially useful statement."
     reviewed = storage.review_candidate(
         video_uuid,
         created["candidate_id"],
@@ -141,6 +224,7 @@ def test_partial_analysis_candidates_are_hidden_until_run_completes(tmp_path: Pa
 
     created = storage.create_analysis_candidate(video_uuid, run["analysis_run_id"], lease, candidate())
     assert created["analysis_run_id"] == run["analysis_run_id"]
+    assert created["category"] == "quote"
     assert storage.list_candidates(video_uuid) == []
 
     completed = storage.finish_analysis_run(
@@ -151,7 +235,9 @@ def test_partial_analysis_candidates_are_hidden_until_run_completes(tmp_path: Pa
     )
     assert completed["status"] == "complete"
     assert storage.get_video(video_uuid)["status"] == "pending_review"
-    assert len(storage.list_candidates(video_uuid)) == 1
+    visible = storage.list_candidates(video_uuid)
+    assert len(visible) == 1
+    assert visible[0]["analysis_reason"] == "Editorially useful statement."
 
 
 def test_stale_analyzing_run_cannot_publish_or_finish(tmp_path: Path) -> None:
@@ -163,7 +249,7 @@ def test_stale_analyzing_run_cannot_publish_or_finish(tmp_path: Path) -> None:
     first, _ = storage.claim_analysis_run(video_uuid, analysis_claim(first_caption))
     storage.attach_caption_snapshot(video_uuid, first["analysis_run_id"], first_caption)
     _, lease = claim_worker(storage)
-    storage.create_analysis_candidate(video_uuid, first["analysis_run_id"], lease, candidate())
+    stored = storage.create_analysis_candidate(video_uuid, first["analysis_run_id"], lease, candidate())
 
     second, created = storage.claim_analysis_run(video_uuid, analysis_claim(second_caption))
     assert created is True
@@ -172,6 +258,11 @@ def test_stale_analyzing_run_cannot_publish_or_finish(tmp_path: Path) -> None:
     by_id = {run["analysis_run_id"]: run for run in storage.list_analysis_runs(video_uuid)}
     assert by_id[first["analysis_run_id"]]["status"] == "stale"
     assert storage.list_candidates(video_uuid) == []
+
+    with storage.connect() as db:
+        persisted = db.execute("SELECT * FROM candidates WHERE candidate_id = ?", (stored["candidate_id"],)).fetchone()
+        assert persisted is not None
+        assert persisted["status"] == "suggested"
 
     with pytest.raises(ValueError, match="lease is inactive"):
         storage.create_analysis_candidate(video_uuid, first["analysis_run_id"], lease, candidate())
@@ -204,6 +295,10 @@ def test_expired_worker_lease_requeues_and_discards_partial_candidates(tmp_path:
     assert reclaimed["status"] == "analyzing"
     assert second_lease != first_lease
     assert storage.list_candidates(video_uuid) == []
+
+    with storage.connect() as db:
+        count = db.execute("SELECT COUNT(*) AS count FROM candidates WHERE analysis_run_id = ?", (run["analysis_run_id"],)).fetchone()["count"]
+        assert count == 0
 
     with pytest.raises(ValueError, match="lease is inactive"):
         storage.create_analysis_candidate(video_uuid, run["analysis_run_id"], first_lease, candidate())
