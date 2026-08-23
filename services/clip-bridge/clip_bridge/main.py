@@ -2,9 +2,15 @@ import hmac
 import os
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 
-from .models import AnalysisRunClaim, AnalysisRunUpdate, CandidateCreate, CandidateReview
+from .models import (
+    AnalysisRunClaim,
+    AnalysisRunUpdate,
+    CandidateCreate,
+    CandidateReview,
+    VideoStatusUpdate,
+)
 from .storage import Storage
 
 
@@ -45,9 +51,22 @@ def healthz() -> dict:
     return {"ok": True, "service": "peertube-clipper-bridge"}
 
 
+@app.get("/v1/videos", dependencies=[Depends(require_service_token)])
+def list_videos(status_filter: list[str] = Query(default=[], alias="status")) -> list[dict]:
+    return storage.list_videos(status_filter or None)
+
+
 @app.put("/v1/videos/{video_uuid}", dependencies=[Depends(require_service_token)])
 def ensure_video(video_uuid: UUID) -> dict:
     return storage.ensure_video(video_uuid)
+
+
+@app.patch(
+    "/v1/videos/{video_uuid}/status",
+    dependencies=[Depends(require_service_token)],
+)
+def update_video_status(video_uuid: UUID, update: VideoStatusUpdate) -> dict:
+    return storage.set_video_status(video_uuid, update.status)
 
 
 @app.get("/v1/videos/{video_uuid}", dependencies=[Depends(require_service_token)])
