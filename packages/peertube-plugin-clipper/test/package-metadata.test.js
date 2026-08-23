@@ -24,7 +24,8 @@ test('declares PeerTube-required package metadata', () => {
   assert.equal(Array.isArray(pkg.translations), false)
 })
 
-test('ships server permission adapter in publishable files', () => {
+test('ships server adapters in publishable files', () => {
   assert.ok(Array.isArray(pkg.files))
   assert.ok(pkg.files.includes('permission.js'))
+  assert.ok(pkg.files.includes('readiness.js'))
 })
