@@ -20,6 +20,7 @@
   "library": "./main.js",
   "files": [
     "main.js",
+    "permission.js",
     "client-scripts",
     "static"
   ],
@@ -38,5 +39,6 @@
       "script": "client-scripts/video-edit.js",
       "scopes": ["video-edit"]
     }
-  ]
+  ],
+  "translations": {}
 }
