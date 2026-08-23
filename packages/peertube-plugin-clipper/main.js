@@ -211,6 +211,7 @@ async function unregister () {
 
 async function evaluateAndPersistReadiness ({ videoUuid, settingsManager, peertubeHelpers }) {
   const evaluation = await inspectPeerTubeReadiness({ videoUuid, peertubeHelpers })
+  const { captionContent, ...publicEvaluation } = evaluation
 
   await bridgeRequest({
     settingsManager,
@@ -229,9 +230,13 @@ async function evaluateAndPersistReadiness ({ videoUuid, settingsManager, peertu
     })
 
     return {
-      ...evaluation,
+      ...publicEvaluation,
       analysisClaim: null
     }
+  }
+
+  if (!Buffer.isBuffer(captionContent) || captionContent.length === 0) {
+    throw new Error('Canonical caption bytes are missing from readiness evaluation')
   }
 
   const analysisConfig = await resolveAnalysisConfig(settingsManager)
@@ -253,8 +258,24 @@ async function evaluateAndPersistReadiness ({ videoUuid, settingsManager, peertu
     throw new Error(`Bridge analysis claim returned ${claim.status}`)
   }
 
+  const analysisRunId = claim.body?.analysis_run?.analysis_run_id
+  if (!analysisRunId) throw new Error('Bridge analysis claim did not return a run id')
+
+  const snapshot = await bridgeRawRequest({
+    settingsManager,
+    peertubeHelpers,
+    method: 'PUT',
+    route: `/v1/videos/${encodeURIComponent(videoUuid)}/analysis-runs/${encodeURIComponent(analysisRunId)}/caption`,
+    body: captionContent,
+    contentType: 'text/vtt; charset=utf-8'
+  })
+
+  if (snapshot.status !== 200) {
+    throw new Error(`Bridge caption snapshot returned ${snapshot.status}`)
+  }
+
   return {
-    ...evaluation,
+    ...publicEvaluation,
     analysisClaim: claim.body
   }
 }
@@ -432,6 +453,33 @@ async function bridgeRequest ({ settingsManager, peertubeHelpers, method, route,
   }
 
   return { status: response.status, body }
+}
+
+async function bridgeRawRequest ({ settingsManager, peertubeHelpers, method, route, body, contentType }) {
+  const config = await resolveBridgeConfig({ settingsManager, peertubeHelpers })
+  const headers = {}
+  if (config.bridgeToken) headers[TOKEN_HEADER] = config.bridgeToken
+  if (contentType) headers['Content-Type'] = contentType
+
+  const response = await fetch(`${config.bridgeUrl}${route}`, {
+    method,
+    headers,
+    body,
+    signal: AbortSignal.timeout(10000)
+  })
+
+  let responseBody = null
+  try {
+    responseBody = await response.json()
+  } catch (_error) {
+    responseBody = null
+  }
+
+  if (!response.ok && response.status >= 500) {
+    throw new Error(`Bridge returned ${response.status}`)
+  }
+
+  return { status: response.status, body: responseBody }
 }
 
 async function getBridgeHealth ({ settingsManager, peertubeHelpers }) {
