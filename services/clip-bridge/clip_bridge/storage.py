@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterator
 from uuid import UUID, uuid4
 
-from .models import CandidateCreate, CandidateReview
+from .models import AnalysisRunClaim, AnalysisRunUpdate, CandidateCreate, CandidateReview
 
 
 class Storage:
@@ -53,6 +53,24 @@ class Storage:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS analysis_runs (
+                    analysis_run_id TEXT PRIMARY KEY,
+                    video_uuid TEXT NOT NULL REFERENCES videos(video_uuid) ON DELETE CASCADE,
+                    caption_language TEXT NOT NULL,
+                    caption_checksum TEXT NOT NULL,
+                    analyzer_version TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_version TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(video_uuid, caption_checksum, analyzer_version)
+                );
+
+                CREATE INDEX IF NOT EXISTS analysis_runs_video_uuid_idx
+                    ON analysis_runs(video_uuid, created_at);
                 """
             )
 
@@ -66,6 +84,20 @@ class Storage:
                 ON CONFLICT(video_uuid) DO UPDATE SET updated_at = excluded.updated_at
                 """,
                 (str(video_uuid), now, now),
+            )
+            row = db.execute(
+                "SELECT * FROM videos WHERE video_uuid = ?",
+                (str(video_uuid),),
+            ).fetchone()
+            return dict(row)
+
+    def set_video_status(self, video_uuid: UUID, status: str) -> dict:
+        self.ensure_video(video_uuid)
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as db:
+            db.execute(
+                "UPDATE videos SET status = ?, updated_at = ? WHERE video_uuid = ?",
+                (status, now, str(video_uuid)),
             )
             row = db.execute(
                 "SELECT * FROM videos WHERE video_uuid = ?",
@@ -190,5 +222,150 @@ class Storage:
             row = db.execute(
                 "SELECT * FROM candidates WHERE candidate_id = ?",
                 (candidate_id,),
+            ).fetchone()
+            return dict(row)
+
+    def list_analysis_runs(self, video_uuid: UUID) -> list[dict]:
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT * FROM analysis_runs
+                WHERE video_uuid = ?
+                ORDER BY created_at DESC, analysis_run_id DESC
+                """,
+                (str(video_uuid),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def claim_analysis_run(self, video_uuid: UUID, claim: AnalysisRunClaim) -> tuple[dict, bool]:
+        self.ensure_video(video_uuid)
+        now = datetime.now(UTC).isoformat()
+        analysis_run_id = str(uuid4())
+
+        with self.connect() as db:
+            existing = db.execute(
+                """
+                SELECT * FROM analysis_runs
+                WHERE video_uuid = ? AND caption_checksum = ? AND analyzer_version = ?
+                LIMIT 1
+                """,
+                (str(video_uuid), claim.caption_checksum, claim.analyzer_version),
+            ).fetchone()
+            if existing:
+                return dict(existing), False
+
+            db.execute(
+                """
+                UPDATE analysis_runs
+                SET status = 'stale', updated_at = ?
+                WHERE video_uuid = ?
+                  AND caption_checksum <> ?
+                  AND status <> 'stale'
+                """,
+                (now, str(video_uuid), claim.caption_checksum),
+            )
+
+            try:
+                db.execute(
+                    """
+                    INSERT INTO analysis_runs(
+                        analysis_run_id, video_uuid,
+                        caption_language, caption_checksum,
+                        analyzer_version, model, prompt_version,
+                        status, error, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, ?)
+                    """,
+                    (
+                        analysis_run_id,
+                        str(video_uuid),
+                        claim.caption_language,
+                        claim.caption_checksum,
+                        claim.analyzer_version,
+                        claim.model,
+                        claim.prompt_version,
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                existing = db.execute(
+                    """
+                    SELECT * FROM analysis_runs
+                    WHERE video_uuid = ? AND caption_checksum = ? AND analyzer_version = ?
+                    LIMIT 1
+                    """,
+                    (str(video_uuid), claim.caption_checksum, claim.analyzer_version),
+                ).fetchone()
+                if not existing:
+                    raise
+                return dict(existing), False
+
+            db.execute(
+                "UPDATE videos SET status = 'ready_for_analysis', updated_at = ? WHERE video_uuid = ?",
+                (now, str(video_uuid)),
+            )
+            row = db.execute(
+                "SELECT * FROM analysis_runs WHERE analysis_run_id = ?",
+                (analysis_run_id,),
+            ).fetchone()
+            return dict(row), True
+
+    def update_analysis_run(
+        self,
+        video_uuid: UUID,
+        analysis_run_id: str,
+        update: AnalysisRunUpdate,
+    ) -> dict | None:
+        now = datetime.now(UTC).isoformat()
+        with self.connect() as db:
+            current = db.execute(
+                """
+                SELECT * FROM analysis_runs
+                WHERE analysis_run_id = ? AND video_uuid = ?
+                """,
+                (analysis_run_id, str(video_uuid)),
+            ).fetchone()
+            if not current:
+                return None
+
+            db.execute(
+                """
+                UPDATE analysis_runs
+                SET status = ?, error = ?, updated_at = ?
+                WHERE analysis_run_id = ? AND video_uuid = ?
+                """,
+                (
+                    update.status,
+                    update.error,
+                    now,
+                    analysis_run_id,
+                    str(video_uuid),
+                ),
+            )
+
+            if update.status == "queued":
+                video_status = "ready_for_analysis"
+            elif update.status == "analyzing":
+                video_status = "analyzing"
+            elif update.status == "failed":
+                video_status = "partial_failure"
+            elif update.status == "complete":
+                candidate_count = db.execute(
+                    "SELECT COUNT(*) AS count FROM candidates WHERE video_uuid = ?",
+                    (str(video_uuid),),
+                ).fetchone()["count"]
+                video_status = "pending_review" if candidate_count else "reviewed"
+            else:
+                video_status = None
+
+            if video_status:
+                db.execute(
+                    "UPDATE videos SET status = ?, updated_at = ? WHERE video_uuid = ?",
+                    (video_status, now, str(video_uuid)),
+                )
+
+            row = db.execute(
+                "SELECT * FROM analysis_runs WHERE analysis_run_id = ?",
+                (analysis_run_id,),
             ).fetchone()
             return dict(row)
