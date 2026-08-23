@@ -1,0 +1,111 @@
+import json
+
+from clipper_worker.core import (
+    Anchor,
+    ProposedCandidate,
+    build_windows,
+    candidate_from_anchor,
+    dedupe_candidates,
+    parse_anchor_response,
+    parse_vtt,
+)
+
+
+def sample_vtt() -> bytes:
+    return b"""WEBVTT
+
+00:00.000 --> 00:05.000
+Intro
+
+00:05.000 --> 00:10.000
+First point
+
+00:10.000 --> 00:15.000
+Second point
+
+00:15.000 --> 00:20.000
+Conclusion
+"""
+
+
+def test_parse_vtt_and_context_expansion_uses_canonical_cues() -> None:
+    cues = parse_vtt(sample_vtt())
+    assert len(cues) == 4
+
+    candidate = candidate_from_anchor(
+        cues,
+        Anchor(start=9.0, end=12.0, category="argument", reason="key point"),
+        context_before=4.0,
+        context_after=4.0,
+    )
+
+    assert candidate is not None
+    assert candidate.anchor_start == 9.0
+    assert candidate.anchor_end == 12.0
+    assert candidate.suggested_start == 5.0
+    assert candidate.suggested_end == 20.0
+    assert candidate.canonical_transcript == "First point Second point Conclusion"
+
+
+def test_five_minute_windows_keep_overlap() -> None:
+    windows = build_windows(700.0, size=300.0, overlap=40.0)
+    assert windows == [
+        (0.0, 300.0),
+        (260.0, 560.0),
+        (520.0, 700.0),
+    ]
+
+
+def test_anchor_parser_rejects_out_of_window_and_caps_results() -> None:
+    anchors = [
+        {"start": float(index), "end": float(index + 1), "category": "quote", "reason": "x"}
+        for index in range(12)
+    ]
+    anchors.insert(0, {"start": -1, "end": 1, "category": "quote", "reason": "bad"})
+
+    parsed = parse_anchor_response(
+        json.dumps({"anchors": anchors}),
+        window_start=0.0,
+        window_end=20.0,
+        max_anchors=8,
+    )
+
+    assert len(parsed) <= 8
+    assert all(anchor.start >= 0 for anchor in parsed)
+    assert all(anchor.end <= 20 for anchor in parsed)
+
+
+def test_dedupe_removes_only_nearly_identical_anchor_boundaries() -> None:
+    first = ProposedCandidate(
+        anchor_start=100,
+        anchor_end=110,
+        suggested_start=90,
+        suggested_end=120,
+        canonical_transcript="same context",
+        category="quote",
+        reason="a",
+    )
+    duplicate = ProposedCandidate(
+        anchor_start=101,
+        anchor_end=111,
+        suggested_start=90,
+        suggested_end=120,
+        canonical_transcript="same context",
+        category="argument",
+        reason="b",
+    )
+    nested_but_distinct = ProposedCandidate(
+        anchor_start=103,
+        anchor_end=108,
+        suggested_start=90,
+        suggested_end=120,
+        canonical_transcript="same context",
+        category="explanation",
+        reason="c",
+    )
+
+    result = dedupe_candidates([first, duplicate, nested_but_distinct])
+
+    assert first in result
+    assert duplicate not in result
+    assert nested_but_distinct in result
