@@ -23,8 +23,26 @@ test('native plugin installer repairs legacy ephemeral staging from package or l
   assert.match(stableInstaller, /pnpm-lock\.yaml/)
   assert.match(stableInstaller, /find_legacy_stages/)
   assert.match(stableInstaller, /\/tmp\/peertube-clipper-stage\\\./)
-  assert.match(stableInstaller, /Repairing legacy ephemeral PeerTube plugin dependency metadata/)
+  assert.match(stableInstaller, /Repairing legacy ephemeral PeerTube Clipper dependency metadata/)
   assert.match(stableInstaller, /verify_no_legacy_reference/)
+})
+
+test('native plugin installer fails closed before pnpm on unrelated broken local plugin dependencies', () => {
+  assert.match(stableInstaller, /find_broken_foreign_file_dependencies/)
+  assert.match(stableInstaller, /Broken unrelated local PeerTube plugin dependency/)
+  assert.match(stableInstaller, /Repair broken unrelated PeerTube plugin file dependencies before installing PeerTube Clipper/)
+
+  const preflightIndex = stableInstaller.indexOf('BROKEN_FOREIGN="$(find_broken_foreign_file_dependencies')
+  const installIndex = stableInstaller.indexOf('npm run plugin:install -- --plugin-path "$STABLE_STAGE"')
+  assert.ok(preflightIndex >= 0)
+  assert.ok(installIndex > preflightIndex)
+})
+
+test('native plugin installer uses the PeerTube users real primary group for staged trees', () => {
+  assert.match(stableInstaller, /PT_GROUP="\$\(id -gn "\$PT_USER"/)
+  assert.match(stableInstaller, /chown -R "\$PT_USER:\$PT_GROUP" "\$destination"/)
+  assert.match(stableInstaller, /chown "\$PT_USER:\$PT_GROUP" "\$STABLE_PARENT"/)
+  assert.doesNotMatch(stableInstaller, /chown -R "\$PT_USER:\$PT_USER"/)
 })
 
 test('native plugin installer does not create a fresh ephemeral installed dependency', () => {
