@@ -27,6 +27,41 @@ from .core import (
 LOG = logging.getLogger("peertube-clipper-analysis-worker")
 LEASE_HEADER = "X-Peertube-Clipper-Worker-Lease"
 
+ANCHOR_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "anchors": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "start": {"type": "number"},
+                    "end": {"type": "number"},
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "quote",
+                            "argument",
+                            "revelation",
+                            "context",
+                            "conflict",
+                            "explanation",
+                            "other",
+                        ],
+                    },
+                    "reason": {
+                        "type": "string",
+                        "maxLength": 500,
+                    },
+                },
+                "required": ["start", "end", "category", "reason"],
+            },
+        }
+    },
+    "required": ["anchors"],
+}
+
 
 class RunInactive(RuntimeError):
     pass
@@ -134,7 +169,8 @@ class OllamaLocator:
                 "model": model,
                 "prompt": prompt,
                 "stream": False,
-                "format": "json",
+                "think": False,
+                "format": ANCHOR_RESPONSE_SCHEMA,
                 "options": {
                     "num_ctx": self.num_ctx,
                     "num_thread": self.num_threads,
