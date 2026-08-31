@@ -47,8 +47,12 @@ If a worker process dies, its lease eventually expires. The next atomic worker c
 - worker lease: 1200 seconds, renewable
 - maximum anchors returned per chunk: 8
 - deterministic context expansion: 12 seconds before/after the anchor, snapped to canonical cue boundaries
+- Ollama output contract: JSON Schema constrained `anchors[]`
+- Qwen3 thinking: disabled for locator extraction (`think: false`)
 
 The model is asked for editorial anchors only. Candidate transcript text is rebuilt from the canonical caption cues and is never accepted from model-generated prose.
+
+The locator passes the expected anchor JSON Schema directly to Ollama's `format` field rather than relying on `format: "json"` alone. The prompt also describes the expected top-level `anchors[]` shape. The worker still validates and normalizes the returned fields and rejects anchors outside the current source window.
 
 ## Container Ollama exposure
 
