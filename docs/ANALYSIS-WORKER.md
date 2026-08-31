@@ -50,6 +50,17 @@ If a worker process dies, its lease eventually expires. The next atomic worker c
 
 The model is asked for editorial anchors only. Candidate transcript text is rebuilt from the canonical caption cues and is never accepted from model-generated prose.
 
+## Container Ollama exposure
+
+In container companion mode, the optional `analysis` profile runs Ollama in Docker while the initial analysis worker runs on the host. The compose stack therefore publishes Ollama to loopback only:
+
+```text
+PEERTUBE_CLIPPER_OLLAMA_BIND=127.0.0.1
+PEERTUBE_CLIPPER_OLLAMA_PORT=11434
+```
+
+The resulting host endpoint is `http://127.0.0.1:11434`. Do not bind Ollama to a public interface unless a separate deployment explicitly requires and secures remote access.
+
 ## Duplicate and generation policy
 
 Partial and nested overlaps are allowed. The worker removes only anchors whose start and end boundaries are both within 2.5 seconds of an already accepted anchor. This is intentionally conservative so distinct editorial uses are not collapsed merely because their proposed clips overlap.
