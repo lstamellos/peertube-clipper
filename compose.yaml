@@ -28,8 +28,8 @@ services:
     restart: unless-stopped
     volumes:
       - ollama-data:/root/.ollama
-    expose:
-      - "11434"
+    ports:
+      - "${PEERTUBE_CLIPPER_OLLAMA_BIND:-127.0.0.1}:${PEERTUBE_CLIPPER_OLLAMA_PORT:-11434}:11434"
     security_opt:
       - no-new-privileges:true
 
