@@ -43,3 +43,10 @@ test('main native installer delegates to persistent installer and does not recre
   assert.doesNotMatch(nativeFunction, /mktemp -d \/tmp\/peertube-clipper-stage/)
   assert.doesNotMatch(nativeFunction, /--plugin-path \"\$stage\"/)
 })
+
+test('main native installer uses the PeerTube users actual primary group for private plugin config', () => {
+  const configFunction = mainInstaller.match(/write_native_plugin_config\(\) \{[\s\S]*?\n\}\n\ninstall_plugin_native\(\)/)?.[0] || ''
+  assert.match(configFunction, /id -gn \"\$PT_USER\"/)
+  assert.match(configFunction, /chown -R \"\$PT_USER:\$group\"/)
+  assert.doesNotMatch(configFunction, /chown -R \"\$PT_USER:\$PT_USER\"/)
+})
