@@ -351,16 +351,18 @@ find_native_base() {
 }
 
 write_native_plugin_config() {
-  local file="$PT_PLUGIN_DATA/bridge.json"
+  local file="$PT_PLUGIN_DATA/bridge.json" group
   case "$BRIDGE_URL$TOKEN" in *$'\n'*|*$'\r'*|*'"'*|*'\\'*) die "Bridge URL/token contains unsupported characters" ;; esac
   if [ "$DRY_RUN" -eq 1 ]; then
     say "DRY-RUN: write private plugin config $file"
     return 0
   fi
+  group="$(id -gn "$PT_USER" 2>/dev/null || true)"
+  [ -n "$group" ] || die "Cannot resolve primary group for PeerTube user: $PT_USER"
   mkdir -p "$PT_PLUGIN_DATA" || die "Cannot create plugin data directory"
   printf '{"bridgeUrl":"%s","bridgeToken":"%s"}\n' "$BRIDGE_URL" "$TOKEN" > "$file" || die "Cannot write plugin config"
   chmod 600 "$file" || die "Cannot protect plugin config"
-  chown -R "$PT_USER:$PT_USER" "$PT_PLUGIN_DATA" || die "Cannot set plugin data ownership"
+  chown -R "$PT_USER:$group" "$PT_PLUGIN_DATA" || die "Cannot set plugin data ownership"
 }
 
 install_plugin_native() {
