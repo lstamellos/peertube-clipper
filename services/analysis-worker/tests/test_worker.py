@@ -3,7 +3,8 @@ import json
 
 import pytest
 
-from clipper_worker.worker import analyze_run
+import clipper_worker.worker as worker_module
+from clipper_worker.worker import OllamaLocator, analyze_run
 
 
 CAPTION = b"""WEBVTT
@@ -59,6 +60,31 @@ class FakeLocator:
         )
 
 
+class FakeHTTPResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self):
+        return {"response": '{"anchors":[]}'}
+
+
+class FakeHTTPClient:
+    instances = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.posts = []
+        self.args = args
+        self.kwargs = kwargs
+        self.__class__.instances.append(self)
+
+    def post(self, url, json):
+        self.posts.append((url, json))
+        return FakeHTTPResponse()
+
+    def close(self) -> None:
+        return None
+
+
 def run_state(caption: bytes = CAPTION):
     return {
         "analysis_run_id": "run-1",
@@ -96,3 +122,33 @@ def test_worker_rejects_snapshot_checksum_mismatch_before_model_call() -> None:
     assert locator.calls == []
     assert bridge.candidates == []
     assert bridge.finished is None
+
+
+def test_ollama_locator_enforces_anchor_schema_and_disables_thinking(monkeypatch) -> None:
+    FakeHTTPClient.instances = []
+    monkeypatch.setattr(worker_module.httpx, "Client", FakeHTTPClient)
+
+    locator = OllamaLocator("http://127.0.0.1:11434")
+    result = locator.locate("qwen3:1.7b", "prompt")
+
+    assert result == '{"anchors":[]}'
+    assert len(FakeHTTPClient.instances) == 1
+
+    client = FakeHTTPClient.instances[0]
+    assert len(client.posts) == 1
+
+    url, body = client.posts[0]
+    assert url == "http://127.0.0.1:11434/api/generate"
+    assert body["model"] == "qwen3:1.7b"
+    assert body["stream"] is False
+    assert body["think"] is False
+    assert body["format"]["type"] == "object"
+    assert body["format"]["required"] == ["anchors"]
+    assert body["format"]["properties"]["anchors"]["type"] == "array"
+    assert body["format"]["properties"]["anchors"]["maxItems"] == 8
+    assert body["format"]["properties"]["anchors"]["items"]["required"] == [
+        "start",
+        "end",
+        "category",
+        "reason",
+    ]
