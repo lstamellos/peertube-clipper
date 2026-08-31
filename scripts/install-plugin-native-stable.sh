@@ -6,6 +6,11 @@
 # references created by older PeerTube Clipper installer versions, including
 # references that survive only in pnpm-lock.yaml.
 #
+# Before invoking PeerTube/pnpm, fail closed if another installed plugin has a
+# broken local file: dependency. PeerTube resolves the whole plugin workspace
+# during plugin:install, so an unrelated broken link can otherwise make an
+# install fail after PeerTube has already begun removing/replacing the target.
+#
 # No persistent strict-mode shell options are enabled.
 
 umask 077
@@ -16,6 +21,7 @@ PLUGIN_NAME="peertube-plugin-clipper"
 
 PT_ROOT=""
 PT_USER=""
+PT_GROUP=""
 PT_CONFIG=""
 PT_STORAGE=""
 NO_RESTART=0
@@ -59,6 +65,8 @@ done
 [ -n "$PT_ROOT" ] && [ -f "$PT_ROOT/package.json" ] || die "Invalid --peertube-root"
 [ -n "$PT_USER" ] || die "Missing --peertube-user"
 id "$PT_USER" >/dev/null 2>&1 || die "PeerTube user does not exist: $PT_USER"
+PT_GROUP="$(id -gn "$PT_USER" 2>/dev/null || true)"
+[ -n "$PT_GROUP" ] || die "Cannot resolve primary group for PeerTube user: $PT_USER"
 [ -n "$PT_CONFIG" ] && [ -d "$PT_CONFIG" ] || die "Invalid --peertube-config-dir"
 [ -n "$PT_STORAGE" ] && [ -d "$PT_STORAGE" ] || die "Invalid --peertube-storage-dir"
 command -v node >/dev/null 2>&1 || die "node is required"
@@ -78,7 +86,7 @@ stage_tree() {
   mkdir -p "$destination" || return 1
   cp -a "$source/." "$destination/" || return 1
   chmod -R u+rwX,go+rX "$destination" || return 1
-  chown -R "$PT_USER:$PT_USER" "$destination" || return 1
+  chown -R "$PT_USER:$PT_GROUP" "$destination" || return 1
 }
 
 find_legacy_stages() {
@@ -102,6 +110,47 @@ for name in sys.argv[1:]:
             seen.add(match)
             print(match)
 PY
+}
+
+find_broken_foreign_file_dependencies() {
+  [ -f "$PACKAGE_JSON" ] || return 0
+
+  node - "$PACKAGE_JSON" "$PLUGIN_NAME" <<'NODE'
+const fs = require('fs')
+const path = require('path')
+const [file, targetPlugin] = process.argv.slice(2)
+let pkg
+try {
+  pkg = JSON.parse(fs.readFileSync(file, 'utf8'))
+} catch (_) {
+  process.exit(0)
+}
+
+const sections = ['dependencies', 'devDependencies', 'optionalDependencies']
+for (const section of sections) {
+  const deps = pkg?.[section]
+  if (!deps || typeof deps !== 'object') continue
+
+  for (const [name, value] of Object.entries(deps)) {
+    if (typeof value !== 'string' || !value.startsWith('file:')) continue
+
+    const raw = value.slice(5)
+    const resolved = path.resolve(path.dirname(file), raw)
+    if (fs.existsSync(resolved)) continue
+
+    // PeerTube Clipper's own old temporary staging references are handled by
+    // find_legacy_stages(), which safely recreates them for one migration.
+    if (
+      name === targetPlugin &&
+      /^\/tmp\/peertube-clipper-stage\.[A-Za-z0-9_-]+\/peertube-plugin-clipper$/.test(resolved)
+    ) {
+      continue
+    }
+
+    process.stdout.write(`${name}\t${value}\t${resolved}\n`)
+  }
+}
+NODE
 }
 
 verify_persistent_dependency() {
@@ -152,26 +201,36 @@ cleanup_legacy_stages() {
   done <<< "$LEGACY_LIST"
 }
 
+BROKEN_FOREIGN="$(find_broken_foreign_file_dependencies 2>/dev/null || true)"
+if [ -n "$BROKEN_FOREIGN" ]; then
+  while IFS=$'\t' read -r dep_name dep_value dep_path; do
+    [ -n "$dep_name" ] || continue
+    warn "Broken unrelated local PeerTube plugin dependency: $dep_name -> $dep_value ($dep_path missing)"
+  done <<< "$BROKEN_FOREIGN"
+  die "Repair broken unrelated PeerTube plugin file dependencies before installing PeerTube Clipper"
+fi
+
 if [ "$DRY_RUN" -eq 1 ]; then
+  say "DRY-RUN: unrelated local file dependency preflight passed"
   say "DRY-RUN: persist plugin source at $STABLE_STAGE"
-  say "DRY-RUN: inspect package.json and pnpm-lock.yaml for legacy ephemeral dependencies"
-  say "DRY-RUN: recreate only referenced legacy staging paths temporarily"
+  say "DRY-RUN: inspect package.json and pnpm-lock.yaml for legacy PeerTube Clipper dependencies"
+  say "DRY-RUN: recreate only referenced PeerTube Clipper legacy staging paths temporarily"
   say "DRY-RUN: run PeerTube plugin installer as $PT_USER from persistent source"
   say "DRY-RUN: verify package.json migrated to persistent file dependency"
-  say "DRY-RUN: verify no legacy ephemeral reference remains"
+  say "DRY-RUN: verify no legacy PeerTube Clipper ephemeral reference remains"
   [ "$NO_RESTART" -eq 1 ] || say "DRY-RUN: restart PeerTube"
   exit 0
 fi
 
 mkdir -p "$PLUGINS_DIR" "$STABLE_PARENT" || die "Cannot create persistent plugin staging path"
 chmod 755 "$STABLE_PARENT" || die "Cannot make persistent staging parent traversable"
-chown "$PT_USER:$PT_USER" "$STABLE_PARENT" || die "Cannot set persistent staging parent ownership"
+chown "$PT_USER:$PT_GROUP" "$STABLE_PARENT" || die "Cannot set persistent staging parent ownership"
 stage_tree "$PLUGIN_SOURCE" "$STABLE_STAGE" || die "Cannot stage persistent plugin source"
 [ "$(basename "$STABLE_STAGE")" = "$PLUGIN_NAME" ] || die "Invalid persistent plugin staging basename"
 
 LEGACY_LIST="$(find_legacy_stages 2>/dev/null || true)"
 if [ -n "$LEGACY_LIST" ]; then
-  say "Repairing legacy ephemeral PeerTube plugin dependency metadata for one upgrade"
+  say "Repairing legacy ephemeral PeerTube Clipper dependency metadata for one upgrade"
 
   while IFS= read -r legacy; do
     [ -n "$legacy" ] || continue
@@ -187,7 +246,7 @@ if [ -n "$LEGACY_LIST" ]; then
     chmod 755 "$parent" "$legacy" || { cleanup_legacy_stages; die "Cannot make legacy staging path traversable"; }
   done <<< "$LEGACY_LIST"
 else
-  say "No legacy ephemeral PeerTube plugin dependency metadata detected"
+  say "No legacy ephemeral PeerTube Clipper dependency metadata detected"
 fi
 
 if ! (
@@ -203,7 +262,7 @@ fi
 cleanup_legacy_stages
 
 verify_persistent_dependency || die "PeerTube plugin dependency did not migrate to the persistent staging path"
-verify_no_legacy_reference || die "Legacy ephemeral plugin dependency remains after installation"
+verify_no_legacy_reference || die "Legacy PeerTube Clipper dependency remains after installation"
 [ -d "$STABLE_STAGE" ] || die "Persistent plugin source disappeared after installation"
 
 say "PeerTube plugin installed from persistent source: $STABLE_STAGE"
