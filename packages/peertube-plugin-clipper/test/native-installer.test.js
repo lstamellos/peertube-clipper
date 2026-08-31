@@ -13,10 +13,26 @@ const mainInstaller = fs.readFileSync(
   'utf8'
 )
 
-test('native plugin installer keeps local file dependency source persistent', () => {
+test('native plugin installer keeps local file dependency source persistent and version-specific', () => {
   assert.match(stableInstaller, /\.peertube-clipper-source/)
+  assert.match(stableInstaller, /PLUGIN_VERSION=/)
+  assert.match(stableInstaller, /STABLE_VERSION_PARENT="\$STABLE_PARENT\/\$PLUGIN_VERSION"/)
+  assert.match(stableInstaller, /STABLE_STAGE="\$STABLE_VERSION_PARENT\/\$PLUGIN_NAME"/)
   assert.match(stableInstaller, /verify_persistent_dependency/)
-  assert.match(stableInstaller, /PeerTube plugin installed from persistent source/)
+  assert.match(stableInstaller, /PeerTube plugin installed from version-specific persistent source/)
+})
+
+test('native plugin installer verifies the installed runtime version before restart', () => {
+  assert.match(stableInstaller, /verify_runtime_version/)
+  assert.match(stableInstaller, /Installed PeerTube plugin runtime version does not match staged version/)
+
+  const installIndex = stableInstaller.indexOf('npm run plugin:install -- --plugin-path "$STABLE_STAGE"')
+  const runtimeVerifyIndex = stableInstaller.indexOf('verify_runtime_version || die')
+  const restartIndex = stableInstaller.indexOf('systemctl restart "$UNIT"')
+
+  assert.ok(installIndex >= 0)
+  assert.ok(runtimeVerifyIndex > installIndex)
+  assert.ok(restartIndex > runtimeVerifyIndex)
 })
 
 test('native plugin installer repairs legacy ephemeral staging from package or lock metadata', () => {
@@ -41,7 +57,7 @@ test('native plugin installer fails closed before pnpm on unrelated broken local
 test('native plugin installer uses the PeerTube users real primary group for staged trees', () => {
   assert.match(stableInstaller, /PT_GROUP="\$\(id -gn "\$PT_USER"/)
   assert.match(stableInstaller, /chown -R "\$PT_USER:\$PT_GROUP" "\$destination"/)
-  assert.match(stableInstaller, /chown "\$PT_USER:\$PT_GROUP" "\$STABLE_PARENT"/)
+  assert.match(stableInstaller, /chown "\$PT_USER:\$PT_GROUP" "\$STABLE_PARENT" "\$STABLE_VERSION_PARENT"/)
   assert.doesNotMatch(stableInstaller, /chown -R "\$PT_USER:\$PT_USER"/)
 })
 
