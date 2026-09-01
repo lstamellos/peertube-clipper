@@ -18,6 +18,7 @@ CATEGORY_VALUES = {
 }
 
 TAG_RE = re.compile(r"<[^>]+>")
+CUE_ID_RE = re.compile(r"^C[0-9]{3,}$")
 
 
 @dataclass(frozen=True)
@@ -153,20 +154,27 @@ def seconds_label(value: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
 
 
+def cue_id(index: int) -> str:
+    return f"C{index:03d}"
+
+
 def build_prompt(cues: list[Cue], window_start: float, window_end: float) -> str:
     transcript = "\n".join(
-        f"[{seconds_label(cue.start)} --> {seconds_label(cue.end)}] {cue.text}"
-        for cue in cues
+        f"[{cue_id(index)} | {seconds_label(cue.start)} --> {seconds_label(cue.end)}] {cue.text}"
+        for index, cue in enumerate(cues, 1)
     )
 
     categories = ", ".join(sorted(CATEGORY_VALUES))
     return f"""You are an editorial clip locator. Analyze only the canonical caption cues below.
 Return JSON only, with this exact top-level shape:
-{{"anchors":[{{"start":12.3,"end":18.7,"category":"quote","reason":"brief editorial rationale"}}]}}
+{{"anchors":[{{"start_cue":"C002","end_cue":"C004","category":"quote","reason":"brief editorial rationale"}}]}}
 
 Rules:
 - Propose 4 to 8 DISTINCT editorial anchors when the material supports them; fewer is allowed when it does not.
-- Timestamps MUST be absolute source seconds and must stay inside {window_start:.3f}..{window_end:.3f}.
+- Select anchor boundaries ONLY by copying cue IDs exactly as shown below.
+- start_cue and end_cue are inclusive; end_cue must not occur before start_cue.
+- Do NOT calculate, convert, rewrite, or return timestamps or numeric seconds.
+- The canonical source window is {window_start:.3f}..{window_end:.3f} seconds; timestamps are informational only and are never output fields.
 - Anchor only what is actually supported by the captions; do not invent text or facts.
 - Prefer substantive quotes, arguments, explanations, revelations, context, or conflict.
 - Do not create multiple anchors for the same editorial moment merely with slightly different boundaries.
@@ -179,7 +187,7 @@ Canonical captions:
 """
 
 
-def parse_anchor_response(raw: str, window_start: float, window_end: float, max_anchors: int = 8) -> list[Anchor]:
+def parse_anchor_response(raw: str, cues: list[Cue], max_anchors: int = 8) -> list[Anchor]:
     text = raw.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
@@ -190,24 +198,44 @@ def parse_anchor_response(raw: str, window_start: float, window_end: float, max_
     if not isinstance(items, list):
         raise ValueError("model response does not contain anchors[]")
 
+    cue_map = {
+        cue_id(index): (index, cue)
+        for index, cue in enumerate(cues, 1)
+    }
+
     anchors: list[Anchor] = []
     for item in items[:max_anchors]:
         if not isinstance(item, dict):
             continue
-        try:
-            start = float(item.get("start"))
-            end = float(item.get("end"))
-        except (TypeError, ValueError):
+
+        start_cue_id = str(item.get("start_cue") or "").strip().upper()
+        end_cue_id = str(item.get("end_cue") or "").strip().upper()
+
+        if not CUE_ID_RE.fullmatch(start_cue_id) or not CUE_ID_RE.fullmatch(end_cue_id):
+            continue
+        if start_cue_id not in cue_map or end_cue_id not in cue_map:
+            continue
+
+        start_index, start_cue = cue_map[start_cue_id]
+        end_index, end_cue = cue_map[end_cue_id]
+        if end_index < start_index:
             continue
 
         category = str(item.get("category") or "other").strip().lower()
         if category not in CATEGORY_VALUES:
             category = "other"
         reason = " ".join(str(item.get("reason") or "").split())[:500]
-
-        if start < window_start or end > window_end or end <= start:
+        if not reason:
             continue
-        anchors.append(Anchor(start=start, end=end, category=category, reason=reason))
+
+        anchors.append(
+            Anchor(
+                start=start_cue.start,
+                end=end_cue.end,
+                category=category,
+                reason=reason,
+            )
+        )
 
     return anchors
 
