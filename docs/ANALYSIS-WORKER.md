@@ -20,7 +20,8 @@ queued + caption snapshot
     analyzing
         |
         | canonical VTT -> 5 minute chunks
-        | qwen3:1.7b editorial anchors
+        | qwen3:1.7b selects canonical cue ranges
+        | worker maps cue IDs to canonical source times
         | deterministic cue-context expansion
         | conservative overlap-boundary dedupe
         | heartbeat / lease check around model work and writes
@@ -48,11 +49,40 @@ If a worker process dies, its lease eventually expires. The next atomic worker c
 - maximum anchors returned per chunk: 8
 - deterministic context expansion: 12 seconds before/after the anchor, snapped to canonical cue boundaries
 - Ollama output contract: JSON Schema constrained `anchors[]`
+- anchor boundary contract: canonical cue IDs, not model-generated timestamps
 - Qwen3 thinking: disabled for locator extraction (`think: false`)
 
 The model is asked for editorial anchors only. Candidate transcript text is rebuilt from the canonical caption cues and is never accepted from model-generated prose.
 
-The locator passes the expected anchor JSON Schema directly to Ollama's `format` field rather than relying on `format: "json"` alone. The prompt also describes the expected top-level `anchors[]` shape. The worker still validates and normalizes the returned fields and rejects anchors outside the current source window.
+### Canonical cue-ID boundary contract
+
+The worker deliberately owns all timestamp arithmetic. Each chunk presents the canonical captions with stable chunk-local IDs such as:
+
+```text
+[C001 | 00:26:01.960 --> 00:26:04.020] Caption text...
+[C002 | 00:26:04.020 --> 00:26:08.890] More caption text...
+```
+
+The model returns only copied cue identifiers:
+
+```json
+{
+  "anchors": [
+    {
+      "start_cue": "C001",
+      "end_cue": "C002",
+      "category": "quote",
+      "reason": "brief editorial rationale"
+    }
+  ]
+}
+```
+
+The worker validates that both IDs exist in the exact chunk and that the end cue does not precede the start cue. It then derives `anchor_start` from the canonical start cue and `anchor_end` from the canonical end cue. Unknown, malformed or reversed cue ranges are ignored.
+
+This design avoids relying on a small language model to parse or convert VTT timecodes into floating-point seconds. A production canary with the earlier numeric-seconds contract showed that `qwen3:1.7b` could return decimal-like values derived from displayed timecodes rather than valid absolute source seconds. Cue IDs make model selection a copy/classification task while retaining canonical timing ownership in deterministic code.
+
+The locator passes the expected anchor JSON Schema directly to Ollama's `format` field rather than relying on `format: "json"` alone. The prompt describes the expected top-level `anchors[]` shape and explicitly forbids timestamp or numeric-second output. The worker still validates all returned cue IDs and reconstructs every candidate from the immutable canonical caption snapshot.
 
 ## Container Ollama exposure
 
@@ -105,6 +135,6 @@ Before deployment, run:
 bash scripts/check-phase2c-isolated.sh
 ```
 
-The check creates a disposable Python virtual environment under `/tmp`, runs Bridge and worker tests, runs Python bytecode compilation, and executes the existing Node/shell checks. It does not contact the production Bridge, claim production analysis runs, start Ollama inference, alter PeerTube, or render media.
+The check uses a disposable Python environment under `/tmp`, runs Bridge and worker tests, runs Python bytecode compilation, and executes the existing Node/shell checks. It prefers a standard `venv`; on Debian/Ubuntu hosts where `venv`/`ensurepip` is unavailable it falls back to a disposable `pip --target` tree instead of requiring a system package installation. It does not contact the production Bridge, claim production analysis runs, start Ollama inference, alter PeerTube, or render media.
 
-Only after the isolated suite passes should the Bridge/plugin schema upgrade and worker canary be deployed.
+Only after the isolated suite passes should a new analyzer generation be used for a production worker canary.
