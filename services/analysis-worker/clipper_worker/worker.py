@@ -36,8 +36,14 @@ ANCHOR_RESPONSE_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "start": {"type": "number"},
-                    "end": {"type": "number"},
+                    "start_cue": {
+                        "type": "string",
+                        "pattern": "^C[0-9]{3,}$",
+                    },
+                    "end_cue": {
+                        "type": "string",
+                        "pattern": "^C[0-9]{3,}$",
+                    },
                     "category": {
                         "type": "string",
                         "enum": [
@@ -52,10 +58,11 @@ ANCHOR_RESPONSE_SCHEMA = {
                     },
                     "reason": {
                         "type": "string",
+                        "minLength": 1,
                         "maxLength": 500,
                     },
                 },
-                "required": ["start", "end", "category", "reason"],
+                "required": ["start_cue", "end_cue", "category", "reason"],
             },
         }
     },
@@ -217,7 +224,7 @@ def analyze_run(
         raw = locator.locate(str(run["model"]), prompt)
         bridge.assert_analyzing(run)
 
-        anchors = parse_anchor_response(raw, window_start, window_end, max_anchors=8)
+        anchors = parse_anchor_response(raw, chunk_cues, max_anchors=8)
         for anchor in anchors:
             candidate = candidate_from_anchor(cues, anchor)
             if candidate is not None:
