@@ -50,8 +50,8 @@ class FakeLocator:
             {
                 "anchors": [
                     {
-                        "start": 5.5,
-                        "end": 9.5,
+                        "start_cue": "C002",
+                        "end_cue": "C002",
                         "category": "quote",
                         "reason": "editorial anchor",
                     }
@@ -106,10 +106,13 @@ def test_worker_uses_snapshot_and_writes_canonical_candidate() -> None:
     assert bridge.active_checks >= 3
     assert len(bridge.candidates) == 1
     written = bridge.candidates[0]
+    assert written.anchor_start == 5.0
+    assert written.anchor_end == 10.0
     assert written.canonical_transcript == "Intro Important statement Supporting detail"
     assert written.category == "quote"
     assert written.reason == "editorial anchor"
     assert locator.calls[0][0] == "qwen3:1.7b"
+    assert "[C002 | 00:00:05.000 --> 00:00:10.000] Important statement" in locator.calls[0][1]
 
 
 def test_worker_rejects_snapshot_checksum_mismatch_before_model_call() -> None:
@@ -124,7 +127,7 @@ def test_worker_rejects_snapshot_checksum_mismatch_before_model_call() -> None:
     assert bridge.finished is None
 
 
-def test_ollama_locator_enforces_anchor_schema_and_disables_thinking(monkeypatch) -> None:
+def test_ollama_locator_enforces_cue_id_schema_and_disables_thinking(monkeypatch) -> None:
     FakeHTTPClient.instances = []
     monkeypatch.setattr(worker_module.httpx, "Client", FakeHTTPClient)
 
@@ -146,9 +149,17 @@ def test_ollama_locator_enforces_anchor_schema_and_disables_thinking(monkeypatch
     assert body["format"]["required"] == ["anchors"]
     assert body["format"]["properties"]["anchors"]["type"] == "array"
     assert body["format"]["properties"]["anchors"]["maxItems"] == 8
-    assert body["format"]["properties"]["anchors"]["items"]["required"] == [
-        "start",
-        "end",
+
+    item_schema = body["format"]["properties"]["anchors"]["items"]
+    assert item_schema["required"] == [
+        "start_cue",
+        "end_cue",
         "category",
         "reason",
     ]
+    assert item_schema["properties"]["start_cue"]["type"] == "string"
+    assert item_schema["properties"]["start_cue"]["pattern"] == "^C[0-9]{3,}$"
+    assert item_schema["properties"]["end_cue"]["type"] == "string"
+    assert item_schema["properties"]["end_cue"]["pattern"] == "^C[0-9]{3,}$"
+    assert "start" not in item_schema["properties"]
+    assert "end" not in item_schema["properties"]
