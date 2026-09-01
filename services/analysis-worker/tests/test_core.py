@@ -3,6 +3,7 @@ import json
 from clipper_worker.core import (
     Anchor,
     ProposedCandidate,
+    build_prompt,
     build_windows,
     candidate_from_anchor,
     dedupe_candidates,
@@ -56,23 +57,79 @@ def test_five_minute_windows_keep_overlap() -> None:
     ]
 
 
-def test_anchor_parser_rejects_out_of_window_and_caps_results() -> None:
+def test_prompt_uses_copyable_cue_ids_and_forbids_timestamp_output() -> None:
+    cues = parse_vtt(sample_vtt())
+    prompt = build_prompt(cues, 0.0, 20.0)
+
+    assert "[C001 | 00:00:00.000 --> 00:00:05.000] Intro" in prompt
+    assert "[C004 | 00:00:15.000 --> 00:00:20.000] Conclusion" in prompt
+    assert '"start_cue":"C002"' in prompt
+    assert '"end_cue":"C004"' in prompt
+    assert "Do NOT calculate, convert, rewrite, or return timestamps or numeric seconds." in prompt
+
+
+def test_anchor_parser_maps_cue_ids_to_canonical_boundaries() -> None:
+    cues = parse_vtt(sample_vtt())
+    raw = json.dumps(
+        {
+            "anchors": [
+                {
+                    "start_cue": "C002",
+                    "end_cue": "C003",
+                    "category": "quote",
+                    "reason": "key exchange",
+                },
+                {
+                    "start_cue": "C999",
+                    "end_cue": "C999",
+                    "category": "quote",
+                    "reason": "hallucinated cue",
+                },
+                {
+                    "start_cue": "C004",
+                    "end_cue": "C002",
+                    "category": "quote",
+                    "reason": "reverse range",
+                },
+                {
+                    "start_cue": "C001",
+                    "end_cue": "C001",
+                    "category": "argument",
+                    "reason": "single cue",
+                },
+            ]
+        }
+    )
+
+    parsed = parse_anchor_response(raw, cues, max_anchors=8)
+
+    assert parsed == [
+        Anchor(start=5.0, end=15.0, category="quote", reason="key exchange"),
+        Anchor(start=0.0, end=5.0, category="argument", reason="single cue"),
+    ]
+
+
+def test_anchor_parser_caps_results_before_mapping() -> None:
+    cues = parse_vtt(sample_vtt())
     anchors = [
-        {"start": float(index), "end": float(index + 1), "category": "quote", "reason": "x"}
+        {
+            "start_cue": "C001",
+            "end_cue": "C001",
+            "category": "quote",
+            "reason": f"anchor {index}",
+        }
         for index in range(12)
     ]
-    anchors.insert(0, {"start": -1, "end": 1, "category": "quote", "reason": "bad"})
 
     parsed = parse_anchor_response(
         json.dumps({"anchors": anchors}),
-        window_start=0.0,
-        window_end=20.0,
+        cues,
         max_anchors=8,
     )
 
-    assert len(parsed) <= 8
-    assert all(anchor.start >= 0 for anchor in parsed)
-    assert all(anchor.end <= 20 for anchor in parsed)
+    assert len(parsed) == 8
+    assert all(anchor.start == 0.0 for anchor in parsed)
+    assert all(anchor.end == 5.0 for anchor in parsed)
 
 
 def test_dedupe_removes_only_nearly_identical_anchor_boundaries() -> None:
