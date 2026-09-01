@@ -1,3 +1,5 @@
+const SESSION_EXPIRED_MESSAGE = 'PeerTube session expired. Reload this page to refresh your login, or sign in again if needed.'
+
 async function register ({ registerClientRoute, peertubeHelpers }) {
   registerClientRoute({
     route: 'peertube-clipper',
@@ -21,6 +23,15 @@ async function mountReviewPage (rootEl, peertubeHelpers) {
     const state = await apiRequest(peertubeHelpers, `/videos/${encodeURIComponent(videoUuid)}/state`)
     renderWorkflow(rootEl, peertubeHelpers, videoUuid, state)
   } catch (error) {
+    if (error?.code === 'peertube_session_expired') {
+      rootEl.innerHTML = pageShell(
+        'PeerTube session expired',
+        `<p>${escapeHtml(SESSION_EXPIRED_MESSAGE)}</p><button type="button" class="peertube-button orange-button" data-clipper-reload-session>Reload PeerTube</button>`
+      )
+      rootEl.querySelector('[data-clipper-reload-session]')?.addEventListener('click', () => window.location.reload())
+      return
+    }
+
     rootEl.innerHTML = pageShell('Clip review unavailable', `<p>${escapeHtml(error.message || 'Unable to load workflow state.')}</p>`)
   }
 }
@@ -177,11 +188,31 @@ async function apiRequest (peertubeHelpers, route, options = {}) {
   try { body = await response.json() } catch (_error) {}
 
   if (!response.ok) {
+    if (isExpiredPeerTubeSession(response, body)) {
+      const error = new Error(SESSION_EXPIRED_MESSAGE)
+      error.code = 'peertube_session_expired'
+      throw error
+    }
+
     const detail = body?.error || body?.detail || `Request failed (${response.status})`
     throw new Error(String(detail))
   }
 
   return body
+}
+
+function isExpiredPeerTubeSession (response, body) {
+  if (response?.status !== 401) return false
+
+  const detail = String(body?.detail || body?.error || body?.message || '').toLowerCase()
+  const code = String(body?.code || '').toLowerCase()
+
+  return (
+    code === 'invalid_token' ||
+    detail.includes('token is invalid') ||
+    detail.includes('invalid token') ||
+    (detail.includes('token') && detail.includes('expired'))
+  )
 }
 
 function setCardBusy (card, busy) {
